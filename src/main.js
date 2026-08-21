@@ -1,5 +1,4 @@
-import { Innertube, Parser, Platform, YTNodes } from 'youtubei.js/web';
-import { SabrStream } from 'googlevideo/sabr-stream';
+import { Innertube, Parser, Platform, YTNodes, SabrStream } from './runtime.js';
 import {
   ALL_FORMATS,
   HLS_FORMATS,
@@ -13,7 +12,7 @@ import {
   WebMOutputFormat,
   StreamTarget,
   ReadableStreamSource
-} from 'mediabunny';
+} from './media-runtime.js';
 
 (() => {
   'use strict';

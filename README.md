@@ -1,6 +1,6 @@
 # YT + X Direct Downloader（Local Remux）
 
-一个面向 YouTube 和 X 的 Tampermonkey 用户脚本。项目源码公开在 GitHub，发布到 Greasy Fork 的是经过依赖打包和压缩后的单文件 userscript。
+一个面向 YouTube 和 X 的 Tampermonkey 用户脚本。项目源码公开在 GitHub；GitHub Release 提供独立单文件版，Greasy Fork 使用主逻辑可阅读、仅将大型依赖外置的版本。
 
 ## 功能概览
 
@@ -8,7 +8,7 @@
 - X：支持普通 MP4、DASH/fMP4 和 HLS（`m3u8`）；初始化片段、单独音频和不可用的播放器请求会自动隐藏。
 - 下载按钮位于 YouTube 视频下方操作栏，以及 X 每条视频区域下方。
 - 大文件通过 File System Access API 流式写入磁盘，不需要把完整文件一次性放进内存。
-- 不调用第三方解析站，不使用运行时 `@require` 或 CDN。
+- 独立单文件版不调用第三方解析站，不使用运行时 `@require` 或 CDN；Greasy Fork 可读版只通过固定版本、带 SRI 校验的 `@require` 加载本项目公开的运行库文件。
 
 ## Greasy Fork 用户使用说明
 
@@ -50,18 +50,61 @@ X 播放器会产生初始化片段、范围请求、单独音频和 HLS 清单�
 
 不会访问第三方视频解析站、广告站、统计站或返利链接。
 
-## 为什么发布文件需要压缩
+## 两种构建产物
 
-本项目不使用运行时 CDN 或 `@require`，因此 `youtubei.js`、`googlevideo` 和 `mediabunny` 都必须在构建时打包进一个 userscript 文件。未压缩的 bundle 体积较大，可能超过 Greasy Fork 的 `2 MiB（2097152 字节）`代码长度限制。
+项目提供两种发布方式：
 
-构建配置使用 esbuild：
+| 产物 | 用途 | 依赖方式 | 主脚本是否可读 |
+| --- | --- | --- | --- |
+| `dist/ytx-direct-downloader.user.js` | GitHub Release、个人本地安装 | 所有依赖打包在单文件中 | 否，使用压缩版 |
+| `dist/ytx-direct-downloader.greasy.user.js` | Greasy Fork | 通过带 SRI 校验的 `@require` 加载库 | 是 |
 
-- `bundle: true`：把运行时依赖合并到单个文件，安装后不依赖外部 CDN。
-- `minify: true`：删除无用空白和开发期代码结构，降低上传和加载体积。
-- `sourcemap: false`：发布文件不附带源码映射，避免进一步增大体积。
-- `legalComments: 'eof'`：将依赖的许可证注释放到文件末尾，保留必要的开源声明。
+### 为什么独立版使用压缩
 
-压缩只作用于发布产物，GitHub 中的 `src/main.js` 仍然是可阅读、可自行修改的源码。当前发布文件约为 `1.18 MiB`，低于 Greasy Fork 限制。
+独立版不使用运行时 `@require` 或 CDN，因此 `youtubei.js`、`googlevideo` 和 `mediabunny` 必须一起打包。未压缩 bundle 超过 Greasy Fork 的 `2 MiB（2097152 字节）`限制，所以独立版使用 esbuild 压缩，当前约为 `1.18 MiB`。
+
+压缩的目的只是减小独立发布文件，不是隐藏代码。GitHub 中的 `src/main.js`、运行时适配层和构建脚本仍然是可阅读源码。
+
+### 为什么 Greasy Fork 版不压缩
+
+Greasy Fork 要求用户能够在安装前审查主脚本，因此不接受压缩后的主脚本。Greasy Fork 版只把较大的第三方库作为外部库通过 `@require` 加载，主下载逻辑保持非压缩、可阅读，并为每个库固定 Git commit 和 SHA-256 完整性哈希。
+
+外部库只在 userscript 初始化时加载；下载器运行期间主动访问媒体的网络白名单仍然只有 YouTube、Googlevideo 和 `video.twimg.com`。如果你不希望初始化时访问 jsDelivr，请使用独立单文件版。
+
+构建会关闭 sourcemap，并保留依赖许可证注释。独立版依赖全部内置；Greasy Fork 版使用固定版本的外部库。
+
+### 为什么需要项目自己的 `vendor/` 文件
+
+Greasy Fork 版头部的两个 `@require` 文件：
+
+```text
+vendor/ytx-youtube-runtime.js
+vendor/ytx-mediabunny-runtime.js
+```
+
+是本项目根据公开 npm 依赖构建出来的适配文件，不是隐藏代码，也不是第三方解析服务。它们的来源和作用如下：
+
+| 文件 | 来源 | 作用 |
+| --- | --- | --- |
+| `ytx-youtube-runtime.js` | `youtubei.js` + `googlevideo` | 将 YouTube.js 和 GoogleVideo 的浏览器模块合并为一个可被 Tampermonkey 加载的脚本，并暴露下载器需要的接口 |
+| `ytx-mediabunny-runtime.js` | `mediabunny` | 将 Mediabunny 的媒体封装接口暴露给下载器，用于浏览器内合并视频和音频 |
+
+官方库并不是都能直接写进 Tampermonkey 的 `@require`：
+
+- [YouTube.js 官方仓库](https://github.com/LuanRT/YouTube.js)提供浏览器构建，但其浏览器 bundle 是 ES Module；
+- [googlevideo 官方仓库](https://github.com/LuanRT/googlevideo)主要发布 ESM 模块，没有适合传统 `@require` 的单文件全局构建；
+- [Mediabunny 官方仓库](https://github.com/Vanilagy/mediabunny)提供浏览器构建文件，但本项目仍将它统一封装为自己的运行时接口，以保证独立版和 Greasy Fork 版使用相同的版本和调用方式。
+
+因此，直接把官方 ESM 文件填入 `@require` 可能无法运行；项目的构建脚本会将它们转换为可加载的运行库。Tampermonkey 只负责在主脚本前加载这些 JavaScript 文件，并不会自动把 ESM `import` 转换成普通脚本。
+
+这些文件完全由 [build.mjs](build.mjs) 根据 `package-lock.json` 中锁定的版本生成，源代码入口位于 `src/vendor/`，不是手工下载后改名。构建会保留依赖许可证注释；项目也在 `@require` URL 中写入固定 commit 和 SHA-256 校验值，文件被替换或篡改后 Tampermonkey 会拒绝加载。
+
+使用者可以直接检查以下内容：
+
+1. `package.json` 和 `package-lock.json`：确认依赖版本。
+2. `src/vendor/`：确认运行库的公开构建入口。
+3. `build.mjs`：确认没有调用第三方解析站，且运行库只是打包和导出接口。
+4. `vendor/`：确认发布到 GitHub 的文件与构建结果一致。
 
 ## 本地构建
 
@@ -79,13 +122,39 @@ npm ci
 npm run build
 ```
 
-构建产物：
+独立单文件产物：
 
 ```text
 dist/ytx-direct-downloader.user.js
 ```
 
-`dist/` 和 `node_modules/` 已加入 `.gitignore`。也就是说，普通源码提交不需要提交依赖目录和构建产物；需要发布或测试时，在本地重新执行 `npm run build` 即可。
+Greasy Fork 版需要在 vendor 文件已经提交到 GitHub 后构建，并提供当前 Git commit SHA。Bash：
+
+```bash
+export YTX_RELEASE_COMMIT="$(git rev-parse HEAD)"
+npm run build:greasy
+```
+
+PowerShell：
+
+```powershell
+$env:YTX_RELEASE_COMMIT = (git rev-parse HEAD)
+npm run build:greasy
+```
+
+产物为：
+
+```text
+dist/ytx-direct-downloader.greasy.user.js
+```
+
+`YTX_RELEASE_COMMIT` 必须是 40 位 Git commit SHA，因为 Greasy Fork 版的 `@require` 会从该 commit 对应的 jsDelivr 地址读取 `vendor/` 库。先运行 `npm run build` 生成或更新 vendor 文件，并把它们提交到 GitHub，再运行 Greasy Fork 构建。
+
+不要填写示例中的 `0123456789abcdef0123456789abcdef01234567` 或其他占位字符串。只有已经提交并推送到 GitHub 的真实 commit SHA 才能生成可用的 jsDelivr 地址；否则 Greasy Fork 安装时会因找不到 `vendor/` 文件而失败。
+
+推荐直接使用 GitHub Actions Release 中生成的 Greasy Fork 版；不要使用指向尚未推送到 GitHub 的 commit 的本地临时构建文件。
+
+`dist/` 和 `node_modules/` 已加入 `.gitignore`；`vendor/` 是 Greasy Fork 外部库的来源文件，需要提交到 GitHub。
 
 ### 本地检查
 
@@ -93,6 +162,7 @@ dist/ytx-direct-downloader.user.js
 node --check src/main.js
 node --check build.mjs
 node --check dist/ytx-direct-downloader.user.js
+node --check dist/ytx-direct-downloader.greasy.user.js
 ```
 
 构建脚本会自动从 `package.json` 读取版本号，并写入 userscript 的 `@version`，不需要再手动同步 `build.mjs` 中的版本。
@@ -105,29 +175,30 @@ node --check dist/ytx-direct-downloader.user.js
 .github/workflows/build-release.yml
 ```
 
-它只在推送符合 `v*.*.*` 的 Git 标签时运行，例如 `v0.1.19`。工作流会：
+它只在推送符合 `v*.*.*` 的 Git 标签时运行，例如 `v0.1.20`。工作流会：
 
 1. 检出源码。
 2. 安装 Node.js 和锁定版本的 npm 依赖。
 3. 检查 Git 标签版本是否与 `package.json` 一致。
-4. 执行 `npm run build`。
-5. 运行语法检查和 Greasy Fork 2 MiB 体积检查。
-6. 生成 SHA-256 校验文件。
-7. 将 userscript 和校验文件上传到 GitHub Release。
+4. 构建独立版和 Greasy Fork 可读版。
+5. 检查 vendor 文件没有未提交的变化。
+6. 运行语法检查和 Greasy Fork 2 MiB 体积检查。
+7. 生成 SHA-256 校验文件。
+8. 将两个 userscript 和校验文件上传到 GitHub Release。
 
 ### 发布新版本
 
-例如发布 `0.1.19`：
+例如发布 `0.1.20`：
 
 ```bash
-npm version 0.1.19 --no-git-tag-version
+npm version 0.1.20 --no-git-tag-version
 npm run build
 
-git add package.json package-lock.json build.mjs README.md LICENSE .github/workflows/build-release.yml
-git commit -m "release: v0.1.19"
-git tag v0.1.19
-git push origin main   # 如果默认分支不是 main，请替换为实际分支名
-git push origin v0.1.19
+git add package.json package-lock.json build.mjs README.md LICENSE .github/workflows/build-release.yml src vendor
+git commit -m "release: v0.1.20"
+git tag v0.1.20
+git push origin master   # 如果默认分支不是 master，请替换为实际分支名
+git push origin v0.1.20
 ```
 
 推送标签后，GitHub Actions 会自动创建对应的 Release。标签名必须以 `v` 开头，并且去掉 `v` 后与 `package.json` 的版本完全一致。
@@ -136,23 +207,26 @@ git push origin v0.1.19
 
 ### 应上传哪个文件
 
-Greasy Fork 的“代码”区域应填写构建后的单文件：
+Greasy Fork 的“代码”区域应填写可读版：
 
 ```text
-dist/ytx-direct-downloader.user.js
+dist/ytx-direct-downloader.greasy.user.js
 ```
 
-不要把 `src/main.js` 直接粘贴到 Greasy Fork。源码依赖多个 npm 包，直接上传源码不能运行；也不要上传整个项目目录、`node_modules` 或未压缩 bundle。
+不要上传独立压缩版 `dist/ytx-direct-downloader.user.js`，Greasy Fork 会将其判定为最小化代码。也不要把 `src/main.js` 直接粘贴到 Greasy Fork，因为它依赖 npm 模块，不能直接运行。
+
+Greasy Fork 版的主脚本包含下载器完整逻辑，只有两个大型第三方运行库通过 `@require` 外置。外部库 URL 使用固定 commit 和 SRI 哈希，符合 Greasy Fork 对 CDN 外部代码的要求。
 
 构建文件头部已经包含 Greasy Fork 所需的元数据，包括：
 
 ```javascript
 // @name         YT + X Direct Downloader (Local Remux)
-// @version      0.1.19
+// @version      0.1.20
 // @license      MIT
+// @require      https://cdn.jsdelivr.net/gh/SamProjects/ytx-direct-downloader@<commit>/vendor/ytx-youtube-runtime.js#sha256=<hash>
 ```
 
-如果 Greasy Fork 提示“Code 过长”，请确认上传的是 `dist/ytx-direct-downloader.user.js`，并先执行 `npm run build`。当前构建配置已经启用压缩，发布文件应低于 2 MiB。
+如果 Greasy Fork 仍提示“代码被压缩”，请确认上传的是 `ytx-direct-downloader.greasy.user.js`，而不是独立版。Greasy Fork 版主脚本约 100 KB，低于 2 MiB 限制。
 
 ### Greasy Fork 页面简介（可直接使用）
 
@@ -169,9 +243,9 @@ dist/ytx-direct-downloader.user.js
 发布新版本时：
 
 1. 修改 `package.json` 版本号。
-2. 运行 `npm run build`。
+2. 运行 `npm run build`，确认生成的 `vendor/` 文件已经提交到 GitHub。
 3. 创建并推送对应的 `vX.Y.Z` 标签。
-4. 从 GitHub Release 下载新的 `dist/ytx-direct-downloader.user.js`，并在 Greasy Fork 编辑页替换脚本代码；GitHub Release 不会自动修改已经发布到 Greasy Fork 的脚本，除非你另外配置了同步方式。
+4. 从 GitHub Release 下载新的 `dist/ytx-direct-downloader.greasy.user.js`，并在 Greasy Fork 编辑页替换脚本代码；GitHub Release 不会自动修改已经发布到 Greasy Fork 的脚本，除非你另外配置了同步方式。
 
 不要手动删除 userscript 头部的 `@version`、`@license`、`@grant` 和 `@connect`，否则 Greasy Fork 或 Tampermonkey 可能无法正确识别脚本。
 

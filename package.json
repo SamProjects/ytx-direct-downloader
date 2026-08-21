@@ -1,0 +1,17 @@
+{
+  "name": "ytx-direct-downloader",
+  "version": "0.1.17",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "build": "node build.mjs"
+  },
+  "dependencies": {
+    "googlevideo": "^4.1.1",
+    "mediabunny": "1.52.3",
+    "youtubei.js": "18.0.0"
+  },
+  "devDependencies": {
+    "esbuild": "0.28.0"
+  }
+}

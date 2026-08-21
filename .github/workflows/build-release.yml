@@ -1,0 +1,67 @@
+name: Build and publish release
+
+on:
+  push:
+    tags:
+      - 'v*.*.*'
+
+permissions:
+  contents: write
+
+jobs:
+  build-and-release:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Check out source
+        uses: actions/checkout@v6
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v6
+        with:
+          node-version: '22'
+          cache: npm
+
+      - name: Install locked dependencies
+        run: npm ci
+
+      - name: Check tag and package versions
+        shell: bash
+        run: |
+          tag_version="${GITHUB_REF_NAME#v}"
+          package_version="$(node -e "console.log(JSON.parse(require('fs').readFileSync('package.json', 'utf8')).version)")"
+          if [[ "$tag_version" != "$package_version" ]]; then
+            echo "Tag version $tag_version does not match package.json version $package_version."
+            exit 1
+          fi
+
+      - name: Build compressed userscript
+        run: npm run build
+
+      - name: Verify build
+        shell: bash
+        run: |
+          node --check src/main.js
+          node --check build.mjs
+          node --check dist/ytx-direct-downloader.user.js
+
+          bytes="$(wc -c < dist/ytx-direct-downloader.user.js)"
+          limit=2097152
+          if (( bytes >= limit )); then
+            echo "The userscript is ${bytes} bytes; Greasy Fork limit is ${limit} bytes."
+            exit 1
+          fi
+          echo "Userscript size: ${bytes} bytes"
+
+          sha256sum dist/ytx-direct-downloader.user.js > dist/ytx-direct-downloader.user.js.sha256
+
+      - name: Publish GitHub Release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh release create "$GITHUB_REF_NAME" \
+            dist/ytx-direct-downloader.user.js \
+            dist/ytx-direct-downloader.user.js.sha256 \
+            --verify-tag \
+            --title "YT + X Direct Downloader $GITHUB_REF_NAME" \
+            --generate-notes

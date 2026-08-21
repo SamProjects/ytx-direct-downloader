@@ -1,81 +1,195 @@
-# YT + X Direct Downloader (Local Remux)
+# YT + X Direct Downloader（Local Remux）
 
-一个只面向 YouTube 和 X 的 Tampermonkey 用户脚本源码项目。
+一个面向 YouTube 和 X 的 Tampermonkey 用户脚本。项目源码公开在 GitHub，发布到 Greasy Fork 的是经过依赖打包和压缩后的单文件 userscript。
 
-## 设计目标
+## 功能概览
 
-- 不使用第三方视频解析站。
-- 不使用 `@require` / CDN 运行时加载代码。
-- YouTube 下载地址只允许 `youtube.com` / `googlevideo.com`。
-- X 下载地址只允许 `video.twimg.com`。
-- YouTube 1080p/1440p/2160p 独立视频流 + 音频流在浏览器内无损 remux。
-- YouTube 普通格式会经过 `Format.decipher()` 实际验证；SABR/无直接 URL 的高画质格式则使用本地 `googlevideo` SABR/UMP 客户端读取，不再把 SABR 误判成“只有 360p”。
-- YouTube 会比较页面数据及多个 InnerTube 客户端，选择包含最高可下载分辨率的响应，不会因为页面先暴露了 360p 就提前停止。
-- 当 YouTube 只向 API 暴露 360p、但播放器实际请求了更高画质时，脚本会从 Resource Timing 捕获同源播放会话中的 `googlevideo.com/videoplayback` 视频轨/音频轨（兼容 `itag`/`fmt` 格式编号），去除播放器临时 range 参数后交给浏览器内 remux。需要先手动选择目标画质并播放数秒。
-- 如果播放器请求不出现在 Resource Timing，脚本还会在 document 主环境捕获 `fetch`/`XMLHttpRequest` 的媒体 URL；只记录允许的 `googlevideo.com` 播放地址，不修改请求内容。
-- 对于 `serverAbrStreamingUrl`，脚本通过 `googlevideo` 的 SABR 客户端按选定 itag 拉取音频/视频流，再交给 Mediabunny 在浏览器内合并；SABR 请求仍通过同一个 YouTube/googlevideo 白名单 transport 发出。
-- SABR 服务器地址会先经过当前 YouTube player 的 `decipher()` 处理，并优先使用页面原生 `fetch` 的 Cookie/Origin/Referer 上下文；失败时才回退到带 YouTube 客户端标识的白名单 GM transport。
-- Tampermonkey 直接下载会持续显示已接收大小、百分比、完成或具体权限错误；`saveAs` 不弹窗时会说明文件可能进入浏览器默认下载目录。
-- 大文件通过 Mediabunny `StreamTarget` 直接写入 File System Access API，不把完整文件保存在内存。
-- YouTube 下载按钮挂在视频下方的操作栏；X 下载按钮挂在每条视频下方右侧，不使用全局悬浮按钮。
-- 按钮使用窗口级事件委托和 DOM 变化监听，兼容 YouTube/X 单页导航、虚拟列表重绘及节点克隆。
-- 下载面板不使用 `innerHTML` 等受限 HTML 注入接口，兼容 YouTube 的 Trusted Types 策略。
-- YouTube player 签名 evaluator 使用专用 `TrustedScript` policy；不会创建全局 default policy，也不会关闭或绕过页面 Trusted Types。
-- X 的普通完整 MP4 经过头部和音视频轨探测后才允许直接下载；DASH/fMP4（如 `sidx` / `moof`）以及跨资源视频/音频统一由 Mediabunny 在浏览器内 remux。
-- X 的 HLS (`m3u8`) 由 Mediabunny 读取并在浏览器内封装成可播放 MP4/WebM。
-- X 会过滤 `sq` 分片并移除播放器临时的 `range` / `rn` / `rbuf` 参数，避免把初始化片段保存成不可播放的小文件。
-- X 播放器产生的初始化片段、单独音频和不可解析 HLS 清单会从下载面板中自动隐藏，不再显示成“无法保存”的候选项。
-- X 文件名优先使用媒体响应提供的文件名；没有原始文件名时使用 `上传者ID_状态ID_分辨率`，不再使用页面标题。
+- YouTube：支持普通直链、独立视频/音频流、SABR/UMP 流，并在浏览器内使用 Mediabunny 无损封装。
+- X：支持普通 MP4、DASH/fMP4 和 HLS（`m3u8`）；初始化片段、单独音频和不可用的播放器请求会自动隐藏。
+- 下载按钮位于 YouTube 视频下方操作栏，以及 X 每条视频区域下方。
+- 大文件通过 File System Access API 流式写入磁盘，不需要把完整文件一次性放进内存。
+- 不调用第三方解析站，不使用运行时 `@require` 或 CDN。
 
-## 环境
+## Greasy Fork 用户使用说明
 
-建议：最新版 Chrome / Edge + Tampermonkey。
+### 安装
 
-1080p+ 合并依赖 `showSaveFilePicker()`，Firefox/Safari 的兼容性不作为本项目目标。
+1. 安装最新版 Tampermonkey。
+2. 在 [Greasy Fork](https://greasyfork.org/zh-CN) 页面安装本脚本，或者从 GitHub Releases 下载 `ytx-direct-downloader.user.js` 后拖入 Tampermonkey。
+3. 安装后刷新 YouTube 或 X 页面。
 
-## 构建
+脚本只匹配以下网站：
 
-```bash
-npm install
-npm run build
-```
+- `youtube.com` / `m.youtube.com`
+- `x.com` / `twitter.com`
 
-产物：
+### YouTube 使用
 
-```text
-dist/ytx-direct-downloader.user.js
-```
+打开视频后，点击视频下方操作栏的“高清下载”。1080p 及以上画质通常是独立视频轨和音频轨，脚本会在浏览器内合并。若页面只显示 360p：
 
-将这个文件拖入 Tampermonkey 或打开后安装即可。
+1. 在 YouTube 播放器中手动选择目标画质。
+2. 播放几秒钟。
+3. 关闭并重新打开下载面板，或点击“刷新”。
 
-## 为什么源码里有一处动态签名 evaluator？
+### X 使用
 
-YouTube 会动态改变 `signatureCipher` / `n` 参数算法。YouTube.js 18.x 的官方浏览器使用说明要求宿主提供一个 JS evaluator，用来执行从 YouTube 自己的 player JS 中提取出来的签名变换代码。Chromium/Edge 在启用 Trusted Types 时可能拒绝 `Function(TrustedScript)`，因此本项目按照 Trusted Types 项目记录的兼容方案，通过专用 policy 执行 `eval(TrustedScript)`。本项目没有用它执行第三方服务器返回的代码，也没有远程 `@require`。
+在包含视频的推文下方点击“视频下载”。建议先让目标视频完整播放几秒，再打开面板或点击“刷新”。
 
-如果你完全不接受动态执行，可以删除该 evaluator，但遇到 `signatureCipher` / `n` 的视频时高画质 URL 可能无法解析。
+X 播放器会产生初始化片段、范围请求、单独音频和 HLS 清单。它们不是完整文件，脚本会自动过滤，只显示可以直接保存或在浏览器内封装的资源。
 
-## 运行时网络白名单
+如果文件名无法从媒体响应中取得，脚本会使用“上传者 ID_状态 ID_分辨率”的格式，不会再使用页面标题“主页”等名称。
 
-源码中的 `isAllowedNetworkUrl()` 会再次检查所有由本脚本发起的 HTTP 请求：
+### 权限和网络范围
+
+脚本需要 Tampermonkey 提供 `GM_xmlhttpRequest`、`GM_download` 和 `unsafeWindow` 权限。运行时主动访问的域名限制为：
 
 - `youtube.com` / `*.youtube.com`
 - `youtubei.googleapis.com`
 - `googlevideo.com` / `*.googlevideo.com`
 - `video.twimg.com`
 
-即使以后某个依赖尝试访问其他域名，也会被本脚本直接拒绝。
+不会访问第三方视频解析站、广告站、统计站或返利链接。
+
+## 为什么发布文件需要压缩
+
+本项目不使用运行时 CDN 或 `@require`，因此 `youtubei.js`、`googlevideo` 和 `mediabunny` 都必须在构建时打包进一个 userscript 文件。未压缩的 bundle 体积较大，可能超过 Greasy Fork 的 `2 MiB（2097152 字节）`代码长度限制。
+
+构建配置使用 esbuild：
+
+- `bundle: true`：把运行时依赖合并到单个文件，安装后不依赖外部 CDN。
+- `minify: true`：删除无用空白和开发期代码结构，降低上传和加载体积。
+- `sourcemap: false`：发布文件不附带源码映射，避免进一步增大体积。
+- `legalComments: 'eof'`：将依赖的许可证注释放到文件末尾，保留必要的开源声明。
+
+压缩只作用于发布产物，GitHub 中的 `src/main.js` 仍然是可阅读、可自行修改的源码。当前发布文件约为 `1.18 MiB`，低于 Greasy Fork 限制。
+
+## 本地构建
+
+### 环境要求
+
+- Node.js 20 或更高版本
+- npm
+
+### 安装依赖并构建
+
+在项目根目录执行：
+
+```bash
+npm ci
+npm run build
+```
+
+构建产物：
+
+```text
+dist/ytx-direct-downloader.user.js
+```
+
+`dist/` 和 `node_modules/` 已加入 `.gitignore`。也就是说，普通源码提交不需要提交依赖目录和构建产物；需要发布或测试时，在本地重新执行 `npm run build` 即可。
+
+### 本地检查
+
+```bash
+node --check src/main.js
+node --check build.mjs
+node --check dist/ytx-direct-downloader.user.js
+```
+
+构建脚本会自动从 `package.json` 读取版本号，并写入 userscript 的 `@version`，不需要再手动同步 `build.mjs` 中的版本。
+
+## GitHub Actions 自动构建并发布 Release
+
+工作流文件位于：
+
+```text
+.github/workflows/build-release.yml
+```
+
+它只在推送符合 `v*.*.*` 的 Git 标签时运行，例如 `v0.1.19`。工作流会：
+
+1. 检出源码。
+2. 安装 Node.js 和锁定版本的 npm 依赖。
+3. 检查 Git 标签版本是否与 `package.json` 一致。
+4. 执行 `npm run build`。
+5. 运行语法检查和 Greasy Fork 2 MiB 体积检查。
+6. 生成 SHA-256 校验文件。
+7. 将 userscript 和校验文件上传到 GitHub Release。
+
+### 发布新版本
+
+例如发布 `0.1.19`：
+
+```bash
+npm version 0.1.19 --no-git-tag-version
+npm run build
+
+git add package.json package-lock.json build.mjs README.md LICENSE .github/workflows/build-release.yml
+git commit -m "release: v0.1.19"
+git tag v0.1.19
+git push origin main   # 如果默认分支不是 main，请替换为实际分支名
+git push origin v0.1.19
+```
+
+推送标签后，GitHub Actions 会自动创建对应的 Release。标签名必须以 `v` 开头，并且去掉 `v` 后与 `package.json` 的版本完全一致。
+
+## Greasy Fork 发布说明
+
+### 应上传哪个文件
+
+Greasy Fork 的“代码”区域应填写构建后的单文件：
+
+```text
+dist/ytx-direct-downloader.user.js
+```
+
+不要把 `src/main.js` 直接粘贴到 Greasy Fork。源码依赖多个 npm 包，直接上传源码不能运行；也不要上传整个项目目录、`node_modules` 或未压缩 bundle。
+
+构建文件头部已经包含 Greasy Fork 所需的元数据，包括：
+
+```javascript
+// @name         YT + X Direct Downloader (Local Remux)
+// @version      0.1.19
+// @license      MIT
+```
+
+如果 Greasy Fork 提示“Code 过长”，请确认上传的是 `dist/ytx-direct-downloader.user.js`，并先执行 `npm run build`。当前构建配置已经启用压缩，发布文件应低于 2 MiB。
+
+### Greasy Fork 页面简介（可直接使用）
+
+> 面向 YouTube 和 X 的本地下载 userscript。
+>
+> YouTube 支持普通格式、独立视频/音频流和部分 SABR/UMP 流；X 支持普通 MP4、DASH/fMP4 和 HLS。需要合并的视频和音频会在浏览器内使用 Mediabunny 无损封装，不调用第三方解析站。
+>
+> 下载按钮位于 YouTube 视频下方操作栏和 X 视频区域下方。脚本会过滤初始化片段、单独音频和播放器临时请求，并使用媒体文件名或“上传者 ID_状态 ID_分辨率”生成保存名。
+>
+> 运行时网络仅允许 YouTube、Googlevideo 和 video.twimg.com。高画质 YouTube 视频可能需要先在播放器中选择画质并播放几秒，再刷新下载面板。
+
+### Greasy Fork 更新
+
+发布新版本时：
+
+1. 修改 `package.json` 版本号。
+2. 运行 `npm run build`。
+3. 创建并推送对应的 `vX.Y.Z` 标签。
+4. 从 GitHub Release 下载新的 `dist/ytx-direct-downloader.user.js`，并在 Greasy Fork 编辑页替换脚本代码；GitHub Release 不会自动修改已经发布到 Greasy Fork 的脚本，除非你另外配置了同步方式。
+
+不要手动删除 userscript 头部的 `@version`、`@license`、`@grant` 和 `@connect`，否则 Greasy Fork 或 Tampermonkey 可能无法正确识别脚本。
 
 ## 已知限制
 
-- YouTube 内部 API、签名算法和反自动化措施可能变化，因此以后可能需要升级 `youtubei.js`。
-- 某些年龄限制、付费、DRM、直播/Post-Live-DVR 内容不在目标范围内。
-- SABR 是否可用取决于当前 YouTube 响应是否包含 `serverAbrStreamingUrl`、Ustreamer 配置及可选格式元数据；需要播放器会话允许这些字段，DRM/需要额外 attestation 的内容仍会失败并显示原因。
-- X 时间线中同时播放多个视频时，脚本按最近的 `video.twimg.com` 请求展示候选；单条推文详情页最准确。
-- 只做 remux，不做重新编码，因此最终容器由视频/音频编码兼容性决定。
+- YouTube 内部 API、签名算法和反自动化措施可能变化，后续可能需要升级 `youtubei.js`。
+- 某些年龄限制、付费、DRM、直播和 Post-Live-DVR 内容不在目标范围内。
+- SABR 是否可用取决于当前 YouTube 响应、播放器会话和可选格式元数据。
+- X 时间线同时播放多个视频时，建议在单条推文详情页使用，以减少混入其他视频资源的可能。
+- 项目只做 remux，不重新编码；最终容器格式由视频和音频编码的兼容性决定。
 
 ## 依赖
 
-- youtubei.js 18.0.0 (MIT)
-- googlevideo 4.1.1 (MIT)
-- mediabunny 1.52.3 (MPL-2.0)
-- esbuild 0.28.0 (MIT, build-time only)
+- [youtubei.js](https://github.com/LuanRT/YouTube.js) 18.0.0（MIT）
+- [googlevideo](https://github.com/LuanRT/googlevideo) 4.1.1（MIT）
+- [mediabunny](https://github.com/Vanilagy/mediabunny) 1.52.3（MPL-2.0）
+- [esbuild](https://github.com/evanw/esbuild) 0.28.0（MIT，仅用于构建）
+
+## 许可证
+
+本项目源码采用 MIT License 开源，详见 [LICENSE](LICENSE)。项目依赖分别遵循其各自许可证；发布或再分发时请同时保留相关许可证与版权声明。

@@ -39,6 +39,7 @@ import {
     lastHref: location.href,
     busy: false,
     activeAnchor: null,
+    panelResizeObserver: null,
     activationInstalled: false,
     ensureScheduled: false,
     domObserver: null,
@@ -1955,13 +1956,13 @@ import {
       }
       #${PANEL_ID} {
         position: fixed; left: 20px; top: 20px; width: 460px;
-        max-width: calc(100vw - 30px); max-height: min(72vh, 720px);
+        max-width: calc(100vw - 16px); max-height: min(72vh, 720px);
         overflow: auto; box-sizing: border-box; padding: 14px;
         border: 1px solid rgba(255,255,255,.14); border-radius: 12px;
-        background: rgba(20,20,20,.97); color: #eee; z-index: 2147483647;
+        background: #141414; color: #eee; z-index: 2147483647;
         box-shadow: 0 10px 38px rgba(0,0,0,.5);
         font: 13px/1.45 -apple-system,BlinkMacSystemFont,"Segoe UI",Arial,sans-serif;
-        isolation: isolate;
+        isolation: isolate; opacity: 1 !important; pointer-events: auto !important;
       }
       #${PANEL_ID} * { box-sizing: border-box; }
       #${PANEL_ID} .ytx-head { display:flex; align-items:center; gap:8px; margin-bottom:10px; }
@@ -2003,18 +2004,43 @@ import {
     if (!p || !anchor?.getBoundingClientRect) return;
 
     const rect = anchor.getBoundingClientRect();
-    const width = p.offsetWidth || 460;
-    const height = p.offsetHeight || 320;
+    const padding = 8;
     const gap = 8;
-    const left = Math.min(
-      Math.max(8, rect.right - width),
-      Math.max(8, window.innerWidth - width - 8)
-    );
-    let top = rect.bottom + gap;
-    if (top + height > window.innerHeight - 8) top = rect.top - height - gap;
+    const viewportWidth = Math.max(0, window.innerWidth);
+    const viewportHeight = Math.max(0, window.innerHeight);
+    const maxWidth = Math.max(240, viewportWidth - padding * 2);
+    const maxHeight = Math.max(160, viewportHeight - padding * 2);
+
+    // Set the viewport-aware limit before measuring. The first render is only a
+    // small loading shell; asynchronous X/HLS analysis can make the panel much
+    // taller a moment later.
+    p.style.maxWidth = `${Math.round(maxWidth)}px`;
+    p.style.maxHeight = `${Math.round(maxHeight)}px`;
+
+    const width = Math.min(p.offsetWidth || 460, maxWidth);
+    const height = Math.min(p.offsetHeight || 320, maxHeight);
+    let left = rect.right - width;
+    if (left < padding) left = rect.left;
+    left = Math.min(Math.max(padding, left), Math.max(padding, viewportWidth - width - padding));
+
+    const belowTop = rect.bottom + gap;
+    const belowSpace = viewportHeight - belowTop - padding;
+    const aboveTop = rect.top - height - gap;
+    const aboveSpace = rect.top - gap - padding;
+    let top;
+    if (belowSpace >= height) {
+      top = belowTop;
+    } else if (aboveTop >= padding) {
+      top = aboveTop;
+    } else {
+      // If neither side can contain the panel, use the side with more room and
+      // let the panel scroll internally instead of letting the page clip it.
+      top = belowSpace >= aboveSpace ? belowTop : aboveTop;
+    }
+    top = Math.min(Math.max(padding, top), Math.max(padding, viewportHeight - height - padding));
 
     p.style.left = `${Math.round(left)}px`;
-    p.style.top = `${Math.round(Math.max(8, top))}px`;
+    p.style.top = `${Math.round(top)}px`;
   }
 
   function setStatus(text, type = '') {
@@ -2032,6 +2058,8 @@ import {
 
   function makePanelShell(title, anchor) {
     const old = panel();
+    state.panelResizeObserver?.disconnect();
+    state.panelResizeObserver = null;
     old?.remove();
     state.activeAnchor = anchor || null;
 
@@ -2066,12 +2094,26 @@ import {
     p.append(head, body, security);
 
     closeButton.onclick = () => {
+      state.panelResizeObserver?.disconnect();
+      state.panelResizeObserver = null;
       p.remove();
       state.activeAnchor = null;
     };
     refreshButton.onclick = () => refreshPanel(true);
     document.body.appendChild(p);
     positionPanel(anchor);
+
+    if (typeof ResizeObserver === 'function') {
+      const observer = new ResizeObserver(() => {
+        if (panel() !== p) {
+          observer.disconnect();
+          return;
+        }
+        positionPanel(anchor);
+      });
+      observer.observe(p);
+      state.panelResizeObserver = observer;
+    }
     return p;
   }
 
@@ -2464,6 +2506,8 @@ import {
 
   function togglePanel(anchor) {
     if (panel() && state.activeAnchor === anchor) {
+      state.panelResizeObserver?.disconnect();
+      state.panelResizeObserver = null;
       panel().remove();
       state.activeAnchor = null;
       return;
@@ -2660,6 +2704,8 @@ import {
   function handleLocationChange() {
     if (location.href === state.lastHref) return;
     state.lastHref = location.href;
+    state.panelResizeObserver?.disconnect();
+    state.panelResizeObserver = null;
     panel()?.remove();
     state.activeAnchor = null;
 

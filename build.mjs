@@ -1,11 +1,15 @@
 import { build } from 'esbuild';
 import fs from 'node:fs/promises';
 
+const packageJson = JSON.parse(await fs.readFile('package.json', 'utf8'));
+const version = packageJson.version;
+
 const metadata = `// ==UserScript==
 // @name         YT + X Direct Downloader (Local Remux)
 // @namespace    haiwaidao.local.ytx-downloader
-// @version      0.1.17
+// @version      ${version}
 // @description  YouTube/X direct downloader. No third-party parser service. High-resolution YouTube streams are remuxed locally in the browser.
+// @license      MIT
 // @match        https://www.youtube.com/*
 // @match        https://m.youtube.com/*
 // @match        https://x.com/*
@@ -34,9 +38,9 @@ await build({
   conditions: ['browser', 'module', 'import'],
   mainFields: ['browser', 'module', 'main'],
   treeShaking: true,
-  minify: false,
+  minify: true,
   sourcemap: false,
-  legalComments: 'inline',
+  legalComments: 'eof',
   banner: { js: metadata },
   define: {
     global: 'globalThis'

@@ -1,4 +1,4 @@
-# YT + X Direct Downloader（Local Remux）
+# Youtube和X（Twitter）直连下载（免跳转第三方）
 
 一个面向 YouTube 和 X 的 Tampermonkey 用户脚本。项目源码公开在 GitHub；GitHub Release 提供独立单文件版，Greasy Fork 使用主逻辑可阅读、仅将大型依赖外置的版本。
 
@@ -175,7 +175,7 @@ node --check dist/ytx-direct-downloader.greasy.user.js
 .github/workflows/build-release.yml
 ```
 
-它只在推送符合 `v*.*.*` 的 Git 标签时运行，例如 `v0.1.20`。工作流会：
+它只在推送符合 `v*.*.*` 的 Git 标签时运行，例如 `v0.1.21`。工作流会：
 
 1. 检出源码。
 2. 安装 Node.js 和锁定版本的 npm 依赖。
@@ -188,17 +188,17 @@ node --check dist/ytx-direct-downloader.greasy.user.js
 
 ### 发布新版本
 
-例如发布 `0.1.20`：
+例如发布 `0.1.21`：
 
 ```bash
-npm version 0.1.20 --no-git-tag-version
+npm version 0.1.21 --no-git-tag-version
 npm run build
 
 git add package.json package-lock.json build.mjs README.md LICENSE .github/workflows/build-release.yml src vendor
-git commit -m "release: v0.1.20"
-git tag v0.1.20
+git commit -m "release: v0.1.21"
+git tag v0.1.21
 git push origin master   # 如果默认分支不是 master，请替换为实际分支名
-git push origin v0.1.20
+git push origin v0.1.21
 ```
 
 推送标签后，GitHub Actions 会自动创建对应的 Release。标签名必须以 `v` 开头，并且去掉 `v` 后与 `package.json` 的版本完全一致。
@@ -220,8 +220,8 @@ Greasy Fork 版的主脚本包含下载器完整逻辑，只有两个大型第�
 构建文件头部已经包含 Greasy Fork 所需的元数据，包括：
 
 ```javascript
-// @name         YT + X Direct Downloader (Local Remux)
-// @version      0.1.20
+// @name         Youtube和X（Twitter）直连下载（免跳转第三方）
+// @version      0.1.21
 // @license      MIT
 // @require      https://cdn.jsdelivr.net/gh/SamProjects/ytx-direct-downloader@<commit>/vendor/ytx-youtube-runtime.js#sha256=<hash>
 ```

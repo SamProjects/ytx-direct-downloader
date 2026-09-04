@@ -36,7 +36,7 @@ if (isGreasyBuild) {
 }
 
 const baseMetadata = `// ==UserScript==
-// @name         YT + X Direct Downloader (Local Remux)
+// @name         Youtube和X（Twitter）直连下载（免跳转第三方）
 // @namespace    haiwaidao.local.ytx-downloader
 // @version      ${version}
 // @description  YouTube/X direct downloader. No third-party parser service. High-resolution YouTube streams are remuxed locally in the browser.

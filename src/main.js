@@ -38,7 +38,12 @@ import {
     lastHref: location.href,
     busy: false,
     activeAnchor: null,
+    activeXContext: null,
+    xButtonContexts: new WeakMap(),
     panelResizeObserver: null,
+    panelDragCleanup: null,
+    panelPosition: null,
+    panelDetached: false,
     activationInstalled: false,
     ensureScheduled: false,
     domObserver: null,
@@ -260,7 +265,9 @@ import {
   }
 
   function getXTweetContext(anchor = state.activeAnchor) {
-    const article = anchor?.closest?.('article, [role="article"], [data-testid="tweet"]') || null;
+    const article = anchor?.article?.matches?.('article, [role="article"], [data-testid="tweet"]')
+      ? anchor.article
+      : anchor?.closest?.('article, [role="article"], [data-testid="tweet"]') || null;
     const links = article ? [...article.querySelectorAll('a[href]')] : [];
     const hrefs = links.map((link) => link.href).filter(Boolean);
     const statusHref = hrefs.find((href) => /\/status(?:es)?\/\d+/i.test(href)) || location.href;
@@ -297,12 +304,12 @@ import {
     }
   }
 
-  function getXDownloadName(item, analysis, extension, index = 0) {
+  function getXDownloadName(item, analysis, extension, index = 0, context = state.activeXContext) {
     const original = analysis?.suggestedName || getXUrlFilename(item?.url);
-    const context = getXTweetContext();
+    const tweetContext = getXTweetContext(context || undefined);
     let base = original;
     if (!base) {
-      base = [context.authorId || 'x-user', context.tweetId || 'tweet'].join('_');
+      base = [tweetContext.authorId || 'x-user', tweetContext.tweetId || 'tweet'].join('_');
       if (analysis?.width && analysis?.height) base += `_${analysis.width}x${analysis.height}`;
       if (index > 0) base += `_video${index + 1}`;
     }
@@ -1286,6 +1293,125 @@ import {
     return [...state.xMedia.values()].sort((a, b) => b.seenAt - a.seenAt);
   }
 
+  function getXMediaFamilyKey(rawUrl) {
+    try {
+      const path = new URL(String(rawUrl)).pathname;
+      const match = path.match(/\/(amplify_video|ext_tw_video|tweet_video)\/(\d+)/i);
+      return match ? `${match[1].toLowerCase()}/${match[2]}` : '';
+    } catch {
+      return '';
+    }
+  }
+
+  function getXMediaDimensions(rawUrl) {
+    try {
+      const match = new URL(String(rawUrl)).pathname.match(
+        /(?:^|\/)(\d{2,5})x(\d{2,5})(?:\/|$)/i
+      );
+      return match ? { width: Number(match[1]), height: Number(match[2]) } : null;
+    } catch {
+      return null;
+    }
+  }
+
+  function getXContextVideoElements(context) {
+    const elements = new Set();
+    const player = context?.player;
+    if (player?.matches?.('video')) elements.add(player);
+    player?.querySelectorAll?.('video').forEach((video) => elements.add(video));
+
+    // Prefer the specific player. Only fall back to the article when X's
+    // player wrapper does not expose a nested video element.
+    if (!elements.size) {
+      for (const video of context?.videoElements || []) elements.add(video);
+      if (context?.article?.querySelectorAll) {
+        context.article.querySelectorAll('video').forEach((video) => elements.add(video));
+      }
+    }
+    return [...elements].filter((video) => video?.tagName === 'VIDEO');
+  }
+
+  function getXVideoSourceUrls(video) {
+    const values = [
+      video.currentSrc,
+      video.src,
+      video.getAttribute('src'),
+      video.getAttribute('data-src'),
+      video.getAttribute('data-url')
+    ];
+    video.querySelectorAll?.('source[src], source[data-src]').forEach((source) => {
+      values.push(source.src, source.getAttribute('src'), source.getAttribute('data-src'));
+    });
+
+    const urls = new Set();
+    for (const value of values) {
+      const normalized = normalizeXMediaUrl(value);
+      if (normalized) urls.add(normalized.url);
+    }
+    return urls;
+  }
+
+  function getXMediaForContext(context) {
+    const media = getRecentXMedia();
+    if (!context) return media;
+
+    // X virtualizes its timeline and may detach the original player after a
+    // route change. Preserve the resources already matched to the clicked
+    // player rather than trying to associate a replacement DOM node with a
+    // different tweet.
+    if (context.mediaUrls?.size && context.player && !context.player.isConnected) {
+      return media.filter((item) => context.mediaUrls.has(item.url));
+    }
+
+    const videos = getXContextVideoElements(context);
+    const sourceUrls = new Set();
+    const familyKeys = new Set();
+    const dimensions = [];
+    for (const video of videos) {
+      getXVideoSourceUrls(video).forEach((url) => {
+        sourceUrls.add(url);
+        const family = getXMediaFamilyKey(url);
+        if (family) familyKeys.add(family);
+      });
+
+      const width = Number(video.videoWidth || 0);
+      const height = Number(video.videoHeight || 0);
+      if (width > 0 && height > 0) dimensions.push({ width, height });
+    }
+
+    const scored = media.map((item) => {
+      let score = 0;
+      if (sourceUrls.has(item.url)) score = 1000;
+
+      const family = getXMediaFamilyKey(item.url);
+      if (family && familyKeys.has(family)) score = Math.max(score, 800);
+
+      const itemDimensions = getXMediaDimensions(item.url);
+      if (itemDimensions && dimensions.some((size) =>
+        size.width === itemDimensions.width && size.height === itemDimensions.height
+      )) {
+        score = Math.max(score, 400);
+      }
+
+      return { item, score };
+    })
+      .filter(({ score }) => score > 0)
+      .sort((a, b) => b.score - a.score || b.item.seenAt - a.item.seenAt)
+      .map(({ item }) => item);
+
+    if (scored.length) {
+      context.mediaUrls = new Set(scored.map((item) => item.url));
+      return scored;
+    }
+
+    // If X has replaced the DOM node while the panel remains open, retain the
+    // previously matched resources instead of falling back to another tweet.
+    if (context.mediaUrls?.size) {
+      return media.filter((item) => context.mediaUrls.has(item.url));
+    }
+    return [];
+  }
+
   function readAscii(bytes, start, length) {
     return String.fromCharCode(...bytes.slice(start, start + length));
   }
@@ -1954,17 +2080,17 @@ import {
         position: relative !important; z-index: 2 !important; box-sizing: border-box !important;
       }
       #${PANEL_ID} {
-        position: fixed; left: 20px; top: 20px; width: 460px;
+        position: fixed !important; left: 20px; top: 20px; width: 460px;
         max-width: calc(100vw - 16px); max-height: min(72vh, 720px);
-        overflow: auto; box-sizing: border-box; padding: 14px;
+        margin: 0 !important; overflow: auto; box-sizing: border-box; padding: 14px;
         border: 1px solid rgba(255,255,255,.14); border-radius: 12px;
-        background: #141414; color: #eee; z-index: 2147483647;
+        background: #141414; color: #eee; z-index: 2147483647 !important;
         box-shadow: 0 10px 38px rgba(0,0,0,.5);
         font: 13px/1.45 -apple-system,BlinkMacSystemFont,"Segoe UI",Arial,sans-serif;
         isolation: isolate; opacity: 1 !important; pointer-events: auto !important;
       }
       #${PANEL_ID} * { box-sizing: border-box; }
-      #${PANEL_ID} .ytx-head { display:flex; align-items:center; gap:8px; margin-bottom:10px; }
+      #${PANEL_ID} .ytx-head { display:flex; align-items:center; gap:8px; margin-bottom:10px; cursor:move; user-select:none; touch-action:none; }
       #${PANEL_ID} .ytx-title { font-size:15px; font-weight:700; flex:1; }
       #${PANEL_ID} button { border:0; border-radius:7px; padding:7px 10px; cursor:pointer; background:#333; color:#fff; }
       #${PANEL_ID} button:hover { background:#444; }
@@ -1998,13 +2124,26 @@ import {
     return message;
   }
 
-  function positionPanel(anchor = state.activeAnchor) {
-    const p = panel();
-    if (!p || !anchor?.getBoundingClientRect) return;
+  function clearPanelDrag() {
+    state.panelDragCleanup?.();
+    state.panelDragCleanup = null;
+  }
 
-    const rect = anchor.getBoundingClientRect();
+  function removePanel() {
+    const p = panel();
+    state.panelResizeObserver?.disconnect();
+    state.panelResizeObserver = null;
+    clearPanelDrag();
+    try { p?.hidePopover?.(); } catch { /* ignore */ }
+    p?.remove();
+    state.activeAnchor = null;
+    state.activeXContext = null;
+    state.panelPosition = null;
+    state.panelDetached = false;
+  }
+
+  function getPanelViewportMetrics(p) {
     const padding = 8;
-    const gap = 8;
     const viewportWidth = Math.max(0, window.innerWidth);
     const viewportHeight = Math.max(0, window.innerHeight);
     const maxWidth = Math.max(240, viewportWidth - padding * 2);
@@ -2018,9 +2157,59 @@ import {
 
     const width = Math.min(p.offsetWidth || 460, maxWidth);
     const height = Math.min(p.offsetHeight || 320, maxHeight);
+    return {
+      padding,
+      width,
+      height,
+      maxLeft: Math.max(padding, viewportWidth - width - padding),
+      maxTop: Math.max(padding, viewportHeight - height - padding)
+    };
+  }
+
+  function clampPanelPosition(p, left, top) {
+    const metrics = getPanelViewportMetrics(p);
+    const safeLeft = Number.isFinite(left) ? left : metrics.padding;
+    const safeTop = Number.isFinite(top) ? top : metrics.padding;
+    return {
+      left: Math.min(Math.max(metrics.padding, safeLeft), metrics.maxLeft),
+      top: Math.min(Math.max(metrics.padding, safeTop), metrics.maxTop)
+    };
+  }
+
+  function applyPanelPosition(p, left, top) {
+    const position = clampPanelPosition(p, left, top);
+    p.style.left = `${Math.round(position.left)}px`;
+    p.style.top = `${Math.round(position.top)}px`;
+    state.panelPosition = position;
+    return position;
+  }
+
+  function positionPanel(anchor = state.activeAnchor) {
+    const p = panel();
+    if (!p) return;
+
+    // After the user moves the window, keep its viewport position. This also
+    // keeps it visible when X replaces the current post while browsing.
+    if (state.panelDetached && state.panelPosition) {
+      applyPanelPosition(p, state.panelPosition.left, state.panelPosition.top);
+      return;
+    }
+
+    if (!anchor?.getBoundingClientRect) {
+      if (state.panelPosition) {
+        applyPanelPosition(p, state.panelPosition.left, state.panelPosition.top);
+      }
+      return;
+    }
+
+    const rect = anchor.getBoundingClientRect();
+    const { width, height, padding, maxLeft, maxTop } = getPanelViewportMetrics(p);
+    const gap = 8;
+    const viewportHeight = Math.max(0, window.innerHeight);
+    const viewportWidth = Math.max(0, window.innerWidth);
     let left = rect.right - width;
     if (left < padding) left = rect.left;
-    left = Math.min(Math.max(padding, left), Math.max(padding, viewportWidth - width - padding));
+    left = Math.min(Math.max(padding, left), maxLeft);
 
     const belowTop = rect.bottom + gap;
     const belowSpace = viewportHeight - belowTop - padding;
@@ -2036,10 +2225,56 @@ import {
       // let the panel scroll internally instead of letting the page clip it.
       top = belowSpace >= aboveSpace ? belowTop : aboveTop;
     }
-    top = Math.min(Math.max(padding, top), Math.max(padding, viewportHeight - height - padding));
+    top = Math.min(Math.max(padding, top), maxTop);
+    applyPanelPosition(p, Math.min(left, viewportWidth - width - padding), top);
+  }
 
-    p.style.left = `${Math.round(left)}px`;
-    p.style.top = `${Math.round(top)}px`;
+  function installPanelDrag(p, head) {
+    let drag = null;
+
+    const stopDragging = () => {
+      drag = null;
+      window.removeEventListener('pointermove', move, true);
+      window.removeEventListener('pointerup', stopDragging, true);
+      window.removeEventListener('pointercancel', stopDragging, true);
+    };
+
+    const move = (event) => {
+      if (!drag || event.pointerId !== drag.pointerId) return;
+      applyPanelPosition(
+        p,
+        drag.left + event.clientX - drag.startX,
+        drag.top + event.clientY - drag.startY
+      );
+      if (event.cancelable) event.preventDefault();
+    };
+
+    const startDragging = (event) => {
+      if (event.button !== 0 || event.target.closest?.('button')) return;
+      const rect = p.getBoundingClientRect();
+      state.panelDetached = true;
+      state.panelPosition = { left: rect.left, top: rect.top };
+      drag = {
+        pointerId: event.pointerId,
+        startX: event.clientX,
+        startY: event.clientY,
+        left: rect.left,
+        top: rect.top
+      };
+      window.addEventListener('pointermove', move, true);
+      window.addEventListener('pointerup', stopDragging, true);
+      window.addEventListener('pointercancel', stopDragging, true);
+      if (p.setPointerCapture) {
+        try { p.setPointerCapture(event.pointerId); } catch { /* ignore */ }
+      }
+      event.preventDefault();
+    };
+
+    head.addEventListener('pointerdown', startDragging);
+    state.panelDragCleanup = () => {
+      stopDragging();
+      head.removeEventListener('pointerdown', startDragging);
+    };
   }
 
   function setStatus(text, type = '') {
@@ -2055,18 +2290,18 @@ import {
     status.textContent = text;
   }
 
-  function makePanelShell(title, anchor) {
-    const old = panel();
-    state.panelResizeObserver?.disconnect();
-    state.panelResizeObserver = null;
-    old?.remove();
+  function makePanelShell(title, anchor, xContext = null) {
+    removePanel();
     state.activeAnchor = anchor || null;
+    state.activeXContext = xContext;
 
     const p = document.createElement('div');
     p.id = PANEL_ID;
+    if ('popover' in p) p.setAttribute('popover', 'manual');
 
     const head = document.createElement('div');
     head.className = 'ytx-head';
+    head.title = '按住标题栏拖动下载框';
 
     const titleElement = document.createElement('div');
     titleElement.className = 'ytx-title';
@@ -2093,13 +2328,14 @@ import {
     p.append(head, body, security);
 
     closeButton.onclick = () => {
-      state.panelResizeObserver?.disconnect();
-      state.panelResizeObserver = null;
-      p.remove();
-      state.activeAnchor = null;
+      removePanel();
     };
     refreshButton.onclick = () => refreshPanel(true);
-    document.body.appendChild(p);
+    (document.body || document.documentElement).appendChild(p);
+    if (typeof p.showPopover === 'function') {
+      try { p.showPopover(); } catch { /* older or restricted browser */ }
+    }
+    installPanelDrag(p, head);
     positionPanel(anchor);
 
     if (typeof ResizeObserver === 'function') {
@@ -2108,7 +2344,7 @@ import {
           observer.disconnect();
           return;
         }
-        positionPanel(anchor);
+        positionPanel();
       });
       observer.observe(p);
       state.panelResizeObserver = observer;
@@ -2326,23 +2562,25 @@ import {
     }
   }
 
-  async function renderX() {
+  async function renderX(context = state.activeXContext) {
     const body = panelBody();
     if (!body) return;
 
     setBodyMessage(body, 'ytx-loading', '正在检查当前页面已经加载的 X 视频资源……');
     setStatus('');
 
-    const media = getRecentXMedia();
+    const media = getXMediaForContext(context);
     if (!media.length) {
-      setBodyMessage(body, 'ytx-tip', '还没有检测到 video.twimg.com 媒体。请先播放目标视频 1～2 秒，再点“刷新”。在单条推文详情页操作最准确。');
+      setBodyMessage(body, 'ytx-tip', '还没有检测到与当前点击视频对应的 video.twimg.com 媒体。请先播放这条视频 1～2 秒，再点“刷新”；脚本不会改用页面中其他视频的资源。');
       return;
     }
 
     body.replaceChildren();
     const tip = document.createElement('div');
     tip.className = 'ytx-tip';
-    tip.textContent = '只显示可用的视频源。初始化片段、单独音频、无视频轨的 HLS 清单和播放器临时请求会自动隐藏。';
+    tip.textContent = context
+      ? '只显示与当前点击视频对应的可用资源。初始化片段、单独音频、无视频轨的 HLS 清单和播放器临时请求会自动隐藏。'
+      : '只显示可用的视频源。初始化片段、单独音频、无视频轨的 HLS 清单和播放器临时请求会自动隐藏。';
     body.appendChild(tip);
 
     const latest = media.slice(0, 12);
@@ -2367,7 +2605,7 @@ import {
 
               state.busy = true;
               try {
-                const downloadName = getXDownloadName(item, analysis, 'mp4', itemIndex);
+                const downloadName = getXDownloadName(item, analysis, 'mp4', itemIndex, context);
                 setStatus(`正在通过 Tampermonkey 下载 ${downloadName}…`);
                 await directDownload(item.url, downloadName, ({ loaded, ratio }) => {
                   if (ratio == null) {
@@ -2400,7 +2638,7 @@ import {
             }
 
             try {
-              const downloadName = getXDownloadName(item, analysis, 'mp4', itemIndex);
+              const downloadName = getXDownloadName(item, analysis, 'mp4', itemIndex, context);
               const fileHandle = await pickSaveFile(downloadName, 'mp4');
               state.busy = true;
               setStatus(`正在读取 X ${reason || 'MP4'} 并在浏览器内无损封装……`);
@@ -2453,7 +2691,7 @@ import {
           }
 
           try {
-            const downloadName = getXDownloadName(item, analysis, analysis.extension, itemIndex);
+            const downloadName = getXDownloadName(item, analysis, analysis.extension, itemIndex, context);
             const fileHandle = await pickSaveFile(downloadName, analysis.extension);
             state.busy = true;
             setStatus('正在读取 X HLS 分片并在浏览器内无损封装……');
@@ -2499,21 +2737,18 @@ import {
   async function refreshPanel(forceYoutube = false) {
     if (!panel()) return;
     if (isYoutubeHost()) await renderYoutube(forceYoutube);
-    else if (isXHost()) await renderX();
+    else if (isXHost()) await renderX(state.activeXContext);
     positionPanel();
   }
 
-  function togglePanel(anchor) {
+  function togglePanel(anchor, xContext = null) {
     if (panel() && state.activeAnchor === anchor) {
-      state.panelResizeObserver?.disconnect();
-      state.panelResizeObserver = null;
-      panel().remove();
-      state.activeAnchor = null;
+      removePanel();
       return;
     }
 
-    panel()?.remove();
-    makePanelShell(isYoutubeHost() ? 'YouTube 直接下载' : 'X 直接下载', anchor);
+    removePanel();
+    makePanelShell(isYoutubeHost() ? 'YouTube 直接下载' : 'X 直接下载', anchor, xContext);
     void refreshPanel(false).catch((error) => showError(error));
   }
 
@@ -2547,7 +2782,10 @@ import {
 
     state.lastActivationAt = now;
     state.lastActivationButton = button;
-    togglePanel(button);
+    togglePanel(
+      button,
+      button.dataset.ytxAction === 'x' ? getXButtonContext(button) : null
+    );
   }
 
   function installContextButtonActivation() {
@@ -2603,6 +2841,26 @@ import {
     return action?.closest?.('[role="group"]') || null;
   }
 
+  function createXButtonContext(button, player, article) {
+    const context = { button, player, article, videoElements: [] };
+    context.videoElements = getXContextVideoElements(context);
+    return context;
+  }
+
+  function getXButtonContext(button) {
+    let context = state.xButtonContexts.get(button);
+    if (!context) {
+      context = createXButtonContext(
+        button,
+        null,
+        button.closest?.('article, [role="article"], [data-testid="tweet"]') || null
+      );
+      state.xButtonContexts.set(button, context);
+    }
+    context.videoElements = getXContextVideoElements(context);
+    return context;
+  }
+
   function ensureXButtons() {
     if (!document.body) return;
     injectStyle();
@@ -2619,13 +2877,18 @@ import {
       const article = player.closest(tweetSelector);
       const existingSlot = article?.querySelector('.ytx-x-download-slot') ||
         (player.nextElementSibling?.matches?.('.ytx-x-download-slot') ? player.nextElementSibling : null);
-      if (existingSlot?.querySelector(`.${BUTTON_CLASS}.ytx-x-button`)) continue;
+      const existingButton = existingSlot?.querySelector(`.${BUTTON_CLASS}.ytx-x-button`);
+      if (existingButton) {
+        state.xButtonContexts.set(existingButton, createXButtonContext(existingButton, player, article));
+        continue;
+      }
 
       const slot = document.createElement('div');
       slot.className = 'ytx-x-download-slot';
       slot.dataset.ytxVideoDownload = 'true';
       const button = createContextButton('↓ 视频下载', '在这条 X 视频下方打开下载选项', 'ytx-x-button', 'x');
       slot.appendChild(button);
+      state.xButtonContexts.set(button, createXButtonContext(button, player, article));
 
       // Prefer the stable gap immediately before X's reply/retweet/like bar.
       // This keeps the button below the media and out of the player's clipped
@@ -2703,10 +2966,8 @@ import {
   function handleLocationChange() {
     if (location.href === state.lastHref) return;
     state.lastHref = location.href;
-    state.panelResizeObserver?.disconnect();
-    state.panelResizeObserver = null;
-    panel()?.remove();
-    state.activeAnchor = null;
+    const keepXPanel = isXHost() && Boolean(panel());
+    if (!keepXPanel) removePanel();
 
     // YouTube info is keyed by video ID and remains safe to cache. X media is
     // page-specific, so clear it to avoid offering an old tweet's stream.
@@ -2714,7 +2975,15 @@ import {
       state.youtubeNavigationStartedAt = performance.now();
       state.youtubeMedia.clear();
     }
-    if (isXHost()) state.xMedia.clear();
+    if (isXHost()) {
+      state.xMedia.clear();
+      if (keepXPanel) {
+        // Keep the panel open while X changes between timeline, post detail,
+        // and message views. Refresh its resources after the new view settles.
+        state.activeAnchor = null;
+        void refreshPanel(false).catch((error) => showError(error));
+      }
+    }
   }
 
   function init() {

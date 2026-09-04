@@ -83,5 +83,5 @@ jobs:
             dist/ytx-direct-downloader.user.js.sha256 \
             dist/ytx-direct-downloader.greasy.user.js.sha256 \
             --verify-tag \
-            --title "YT + X Direct Downloader $GITHUB_REF_NAME" \
+            --title "Youtube和X（Twitter）直连下载（免跳转第三方） $GITHUB_REF_NAME" \
             --generate-notes

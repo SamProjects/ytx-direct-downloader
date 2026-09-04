@@ -35,11 +35,18 @@ import {
     youtubeNavigationStartedAt: 0,
     youtubeNetworkCaptureInstalled: false,
     xMedia: new Map(),
+    xNetworkCaptureInstalled: false,
     lastHref: location.href,
     busy: false,
+    downloadQueue: [],
+    downloadHistory: [],
+    downloadWorkerActive: false,
+    currentDownload: null,
+    nextDownloadId: 1,
     activeAnchor: null,
     activeXContext: null,
     xButtonContexts: new WeakMap(),
+    xContexts: new Set(),
     panelResizeObserver: null,
     panelDragCleanup: null,
     panelPosition: null,
@@ -278,13 +285,15 @@ import {
       .map((link) => link.href)
       .find((href) => !/\/status(?:es)?\/\d+/i.test(href));
     const authorFromUser = authorHref?.match(/\/([^/?#]+)\/?(?:\?|#|$)/)?.[1] || '';
+    const tweetText = article?.querySelector('[data-testid="tweetText"]')?.textContent?.trim() || '';
 
     return {
       article,
       tweetId: statusMatch?.[1] || '',
       authorId: authorFromStatus && authorFromStatus !== 'i'
         ? authorFromStatus
-        : authorFromUser
+        : authorFromUser,
+      tweetText
     };
   }
 
@@ -304,17 +313,22 @@ import {
     }
   }
 
-  function getXDownloadName(item, analysis, extension, index = 0, context = state.activeXContext) {
-    const original = analysis?.suggestedName || getXUrlFilename(item?.url);
-    const tweetContext = getXTweetContext(context || undefined);
-    let base = original;
-    if (!base) {
-      base = [tweetContext.authorId || 'x-user', tweetContext.tweetId || 'tweet'].join('_');
-      if (analysis?.width && analysis?.height) base += `_${analysis.width}x${analysis.height}`;
-      if (index > 0) base += `_video${index + 1}`;
-    }
+  function truncateFilename(value, maxLength = 96) {
+    if (!String(value || '').trim()) return '';
+    const cleaned = sanitizeFilename(value)
+      .replace(/\.(?:mp4|webm|mov|m4s|m3u8)$/i, '')
+      .trim();
+    return sanitizeFilename(cleaned.slice(0, maxLength));
+  }
 
-    const clean = sanitizeFilename(base).replace(/\.(?:mp4|webm|mov|m4s|m3u8)$/i, '');
+  function getXDownloadName(item, analysis, extension, index = 0, context = state.activeXContext) {
+    const tweetContext = getXTweetContext(context || undefined);
+    const tweetTitle = truncateFilename(tweetContext.tweetText, 96);
+    const fallback = [tweetContext.authorId || 'x-user', tweetContext.tweetId || 'tweet'].join('_');
+    let base = tweetTitle || truncateFilename(analysis?.suggestedName, 96) || fallback;
+    if (index > 0) base += `_video${index + 1}`;
+
+    const clean = truncateFilename(base, 120);
     return `${clean || 'x-video'}.${extension}`;
   }
 
@@ -324,6 +338,232 @@ import {
     if (n >= 1024 ** 3) return `${(n / 1024 ** 3).toFixed(2)} GB`;
     if (n >= 1024 ** 2) return `${(n / 1024 ** 2).toFixed(2)} MB`;
     return `${(n / 1024).toFixed(1)} KB`;
+  }
+
+  function createDownloadAbortError() {
+    return new DOMException('下载任务已取消。', 'AbortError');
+  }
+
+  function renderDownloadTasks() {
+    const container = panel()?.querySelector('[data-role="tasks"]');
+    if (!container) return;
+
+    const tasks = state.downloadHistory.slice(-8);
+    container.replaceChildren();
+    container.hidden = tasks.length === 0;
+    if (!tasks.length) return;
+
+    const title = document.createElement('div');
+    title.className = 'ytx-tasks-title';
+    title.textContent = `下载队列（${state.downloadQueue.filter((task) => task.status === 'queued').length} 个等待中）`;
+    container.appendChild(title);
+
+    const labels = {
+      queued: '等待中',
+      running: '进行中',
+      paused: '已暂停',
+      completed: '已完成',
+      failed: '失败',
+      cancelled: '已取消'
+    };
+
+    for (const task of tasks.slice().reverse()) {
+      const row = document.createElement('div');
+      row.className = 'ytx-task';
+
+      const line = document.createElement('div');
+      line.className = 'ytx-task-line';
+      const name = document.createElement('div');
+      name.className = 'ytx-task-name';
+      name.title = task.label;
+      name.textContent = task.label;
+      const stateLabel = document.createElement('div');
+      stateLabel.className = 'ytx-task-state';
+      stateLabel.textContent = labels[task.status] || task.status;
+      line.append(name, stateLabel);
+      row.appendChild(line);
+
+      if (task.progressText) {
+        const progress = document.createElement('div');
+        progress.className = 'ytx-task-progress';
+        progress.textContent = task.progressText;
+        row.appendChild(progress);
+      }
+
+      if (['queued', 'running', 'paused'].includes(task.status)) {
+        const actions = document.createElement('div');
+        actions.className = 'ytx-task-actions';
+
+        if (task.status === 'paused' || task.status === 'queued') {
+          const pauseButton = document.createElement('button');
+          pauseButton.type = 'button';
+          pauseButton.textContent = task.status === 'paused' ? '继续' : '暂停';
+          pauseButton.onclick = (event) => {
+            event.stopPropagation();
+            if (task.status === 'paused') resumeDownloadTask(task);
+            else pauseDownloadTask(task);
+          };
+          actions.appendChild(pauseButton);
+        } else if (task.pauseSupported !== false) {
+          const pauseButton = document.createElement('button');
+          pauseButton.type = 'button';
+          pauseButton.textContent = '暂停';
+          pauseButton.onclick = (event) => {
+            event.stopPropagation();
+            pauseDownloadTask(task);
+          };
+          actions.appendChild(pauseButton);
+        }
+
+        const cancelButton = document.createElement('button');
+        cancelButton.type = 'button';
+        cancelButton.textContent = '取消';
+        cancelButton.onclick = (event) => {
+          event.stopPropagation();
+          cancelDownloadTask(task);
+        };
+        actions.appendChild(cancelButton);
+        row.appendChild(actions);
+      }
+
+      container.appendChild(row);
+    }
+  }
+
+  function setDownloadTaskProgress(task, text) {
+    task.progressText = text;
+    if (state.currentDownload === task) setStatus(text);
+    renderDownloadTasks();
+  }
+
+  async function waitForDownloadTask(task) {
+    if (!task) return;
+    if (task.cancelRequested) throw createDownloadAbortError();
+    while (task.paused && !task.cancelRequested) {
+      task.status = 'paused';
+      renderDownloadTasks();
+      await new Promise((resolve) => {
+        task.resumeWaiters ||= [];
+        task.resumeWaiters.push(resolve);
+      });
+    }
+    if (task.cancelRequested) throw createDownloadAbortError();
+  }
+
+  function pauseDownloadTask(task) {
+    if (!task || !['queued', 'running'].includes(task.status)) return;
+    if (task.status === 'running' && task.pauseSupported === false) {
+      setStatus('当前下载方式不支持暂停，只能取消；浏览器内下载任务支持暂停。', 'error');
+      return;
+    }
+    task.paused = true;
+    task.status = 'paused';
+    // Stop the current range request. The next request resumes at the last
+    // completed byte instead of starting the file from zero.
+    try { task.controller?.abort?.(); } catch { /* ignore */ }
+    renderDownloadTasks();
+  }
+
+  function resumeDownloadTask(task) {
+    if (!task || task.status !== 'paused') return;
+    task.paused = false;
+    task.status = state.currentDownload === task ? 'running' : 'queued';
+    const waiters = task.resumeWaiters || [];
+    task.resumeWaiters = [];
+    waiters.forEach((resolve) => resolve());
+    renderDownloadTasks();
+    void pumpDownloadQueue();
+  }
+
+  function cleanupDownloadTask(task) {
+    if (!task || task.cleanupDone) return;
+    task.cleanupDone = true;
+    try { task.cleanup?.(); } catch { /* ignore cleanup failure */ }
+  }
+
+  function cancelDownloadTask(task) {
+    if (!task || ['completed', 'failed', 'cancelled'].includes(task.status)) return;
+    task.cancelRequested = true;
+    task.paused = false;
+    try { task.controller?.abort?.(); } catch { /* ignore */ }
+    try { task.cancel?.(); } catch { /* ignore */ }
+    if (state.currentDownload !== task) cleanupDownloadTask(task);
+    if (task.status !== 'running') {
+      task.status = 'cancelled';
+      task.progressText = '任务已取消';
+    }
+    const waiters = task.resumeWaiters || [];
+    task.resumeWaiters = [];
+    waiters.forEach((resolve) => resolve());
+    renderDownloadTasks();
+    void pumpDownloadQueue();
+  }
+
+  function enqueueDownload(label, run, options = {}) {
+    const task = {
+      id: state.nextDownloadId++,
+      label,
+      run,
+      status: 'queued',
+      progressText: '等待队列执行……',
+      pauseSupported: options.pauseSupported !== false,
+      paused: false,
+      cancelRequested: false,
+      resumeWaiters: [],
+      controller: null,
+      cancel: null,
+      cleanup: options.cleanup || null,
+      cleanupDone: false
+    };
+    state.downloadQueue.push(task);
+    state.downloadHistory.push(task);
+    if (state.downloadHistory.length > 20) state.downloadHistory.splice(0, state.downloadHistory.length - 20);
+    renderDownloadTasks();
+    void pumpDownloadQueue();
+    return task;
+  }
+
+  async function pumpDownloadQueue() {
+    if (state.downloadWorkerActive) return;
+    state.downloadWorkerActive = true;
+    state.busy = true;
+    try {
+      while (true) {
+        const task = state.downloadQueue.find((entry) => entry.status === 'queued');
+        if (!task) break;
+        state.currentDownload = task;
+        task.status = 'running';
+        task.progressText = '正在启动……';
+        renderDownloadTasks();
+        try {
+          await task.run(task);
+          task.status = task.cancelRequested ? 'cancelled' : 'completed';
+          task.progressText = task.cancelRequested ? '任务已取消' : '任务已完成';
+        } catch (error) {
+          if (task.cancelRequested || error?.name === 'AbortError') {
+            task.status = 'cancelled';
+            task.progressText = '任务已取消';
+          } else {
+            task.status = 'failed';
+            task.progressText = `失败：${error?.message || error}`;
+            setStatus(task.progressText, 'error');
+          }
+        } finally {
+          cleanupDownloadTask(task);
+          task.controller = null;
+          task.cancel = null;
+          task.run = null;
+          state.downloadQueue = state.downloadQueue.filter((entry) => entry !== task);
+          state.currentDownload = null;
+          renderDownloadTasks();
+        }
+      }
+    } finally {
+      state.currentDownload = null;
+      state.downloadWorkerActive = false;
+      state.busy = false;
+      renderDownloadTasks();
+    }
   }
 
   function mimeContainer(mimeType) {
@@ -1128,6 +1368,53 @@ import {
     state.youtubeNetworkCaptureInstalled = installed;
   }
 
+  function installXNetworkCapture() {
+    if (!isXHost() || state.xNetworkCaptureInstalled) return;
+
+    const pageWindow = typeof unsafeWindow !== 'undefined'
+      ? unsafeWindow
+      : document.defaultView || globalThis;
+    let installed = false;
+    const hookMarker = '__ytxLocalDownloaderXMediaHook__';
+
+    try {
+      const originalFetch = pageWindow.fetch;
+      if (typeof originalFetch === 'function' && !originalFetch[hookMarker]) {
+        const wrappedFetch = function ytxXMediaFetch(input, ...init) {
+          try { rememberXMedia(getRequestUrl(input)); } catch { /* ignore */ }
+          const result = Reflect.apply(originalFetch, this, [input, ...init]);
+          return Promise.resolve(result).then((response) => {
+            try { rememberXMedia(response?.url); } catch { /* ignore */ }
+            return response;
+          });
+        };
+        Object.defineProperty(wrappedFetch, hookMarker, { value: true });
+        pageWindow.fetch = wrappedFetch;
+        installed = true;
+      }
+    } catch {
+      // The page may expose a non-writable fetch property.
+    }
+
+    try {
+      const xhrPrototype = pageWindow.XMLHttpRequest?.prototype;
+      const originalOpen = xhrPrototype?.open;
+      if (xhrPrototype && typeof originalOpen === 'function' && !originalOpen[hookMarker]) {
+        const wrappedOpen = function ytxXMediaXhrOpen(method, url, ...rest) {
+          try { rememberXMedia(getRequestUrl(url)); } catch { /* ignore */ }
+          return Reflect.apply(originalOpen, this, [method, url, ...rest]);
+        };
+        Object.defineProperty(wrappedOpen, hookMarker, { value: true });
+        xhrPrototype.open = wrappedOpen;
+        installed = true;
+      }
+    } catch {
+      // The page may expose a non-writable XHR prototype.
+    }
+
+    state.xNetworkCaptureInstalled = installed;
+  }
+
   function capturedYoutubeFormat(videoId, media) {
     const metadata = state.youtubeFormatMetadata.get(videoId);
     const source = metadata?.get(`${media.itag}:${media.xtags}`) || metadata?.get(String(media.itag));
@@ -1247,28 +1534,33 @@ import {
     return { url: url.href, type };
   }
 
-  function rememberXMedia(rawUrl, startTime = performance.now()) {
+  function rememberXMedia(rawUrl, startTime = performance.now(), associate = true) {
     const normalized = normalizeXMediaUrl(rawUrl);
     if (!normalized) return;
 
-    state.xMedia.set(normalized.url, {
+    const entry = {
       url: normalized.url,
       type: normalized.type,
       seenAt: Number(startTime) || performance.now()
-    });
+    };
+    state.xMedia.set(normalized.url, entry);
+    if (associate) associateXMediaWithActiveContext(entry);
 
     // Keep bounded.
-    if (state.xMedia.size > 100) {
+    if (state.xMedia.size > 300) {
       const oldest = [...state.xMedia.entries()]
         .sort((a, b) => a[1].seenAt - b[1].seenAt)
-        .slice(0, state.xMedia.size - 100);
+        .slice(0, state.xMedia.size - 300);
       oldest.forEach(([key]) => state.xMedia.delete(key));
     }
   }
 
   function scanPerformanceForXMedia() {
     for (const entry of performance.getEntriesByType('resource')) {
-      rememberXMedia(entry.name, entry.startTime);
+      // Buffered entries describe the whole page and have no reliable DOM
+      // owner. Do not assign them to whichever player happens to be visible
+      // when the user opens the panel.
+      rememberXMedia(entry.name, entry.startTime, false);
     }
   }
 
@@ -1287,6 +1579,9 @@ import {
   // Install before YouTube's player starts its media fetches. This complements
   // Resource Timing for SABR/player requests that are not exposed there.
   installYoutubeNetworkCapture();
+  // X's MediaSource player can hide the m3u8 URL from the video element and
+  // from Resource Timing, so capture the page request before the player starts.
+  installXNetworkCapture();
 
   function getRecentXMedia() {
     scanPerformanceForXMedia();
@@ -1296,7 +1591,7 @@ import {
   function getXMediaFamilyKey(rawUrl) {
     try {
       const path = new URL(String(rawUrl)).pathname;
-      const match = path.match(/\/(amplify_video|ext_tw_video|tweet_video)\/(\d+)/i);
+      const match = path.match(/\/(amplify_video|ext_tw_video|tweet_video)(?:_thumb)?\/(\d+)/i);
       return match ? `${match[1].toLowerCase()}/${match[2]}` : '';
     } catch {
       return '';
@@ -1312,6 +1607,42 @@ import {
     } catch {
       return null;
     }
+  }
+
+  function getXContextActivity(context) {
+    let best = null;
+    const viewportWidth = Math.max(0, window.innerWidth);
+    const viewportHeight = Math.max(0, window.innerHeight);
+    const now = performance.now();
+
+    for (const video of getXContextVideoElements(context)) {
+      if (!video.isConnected) continue;
+      const rect = video.getBoundingClientRect();
+      const visibleWidth = Math.max(0, Math.min(rect.right, viewportWidth) - Math.max(rect.left, 0));
+      const visibleHeight = Math.max(0, Math.min(rect.bottom, viewportHeight) - Math.max(rect.top, 0));
+      const visibleArea = visibleWidth * visibleHeight;
+      if (!visibleArea) continue;
+
+      const playing = !video.paused && video.readyState > 0;
+      const recentlyActive = context.lastActiveAt > 0 && now - context.lastActiveAt < 30_000;
+      const score = (playing ? 1_000_000_000 : recentlyActive ? 500_000_000 : 0) + visibleArea;
+      if (!best || score > best.score) best = { score, video };
+    }
+    return best;
+  }
+
+  function associateXMediaWithActiveContext(entry) {
+    let active = null;
+    for (const context of state.xContexts) {
+      const activity = getXContextActivity(context);
+      if (activity && (!active || activity.score > active.activity.score)) {
+        active = { context, activity };
+      }
+    }
+    if (!active || active.activity.score < 500_000_000) return;
+
+    active.context.capturedMediaUrls.add(entry.url);
+    active.context.lastMediaAt = performance.now();
   }
 
   function getXContextVideoElements(context) {
@@ -1331,24 +1662,52 @@ import {
     return [...elements].filter((video) => video?.tagName === 'VIDEO');
   }
 
-  function getXVideoSourceUrls(video) {
+  function getXVideoReferenceValues(video) {
     const values = [
       video.currentSrc,
       video.src,
       video.getAttribute('src'),
       video.getAttribute('data-src'),
-      video.getAttribute('data-url')
+      video.getAttribute('data-url'),
+      video.poster,
+      video.getAttribute('poster'),
+      video.getAttribute('data-poster')
     ];
     video.querySelectorAll?.('source[src], source[data-src]').forEach((source) => {
       values.push(source.src, source.getAttribute('src'), source.getAttribute('data-src'));
     });
+    return values.filter(Boolean);
+  }
 
+  function getXVideoSourceUrls(video) {
     const urls = new Set();
-    for (const value of values) {
+    for (const value of getXVideoReferenceValues(video)) {
       const normalized = normalizeXMediaUrl(value);
       if (normalized) urls.add(normalized.url);
     }
     return urls;
+  }
+
+  function getXContextReferenceValues(context) {
+    const values = [];
+    const root = context?.player;
+    if (!root) return values;
+
+    values.push(
+      root.getAttribute?.('data-url'),
+      root.getAttribute?.('data-src'),
+      root.getAttribute?.('poster')
+    );
+    root.querySelectorAll?.('img[src], img[data-src], [data-url], [data-src]').forEach((element) => {
+      values.push(
+        element.currentSrc,
+        element.src,
+        element.getAttribute('src'),
+        element.getAttribute('data-src'),
+        element.getAttribute('data-url')
+      );
+    });
+    return values.filter(Boolean);
   }
 
   function getXMediaForContext(context) {
@@ -1368,29 +1727,41 @@ import {
     const familyKeys = new Set();
     const dimensions = [];
     for (const video of videos) {
+      const referenceValues = getXVideoReferenceValues(video);
       getXVideoSourceUrls(video).forEach((url) => {
         sourceUrls.add(url);
-        const family = getXMediaFamilyKey(url);
-        if (family) familyKeys.add(family);
       });
+      for (const value of referenceValues) {
+        const family = getXMediaFamilyKey(value);
+        if (family) familyKeys.add(family);
+      }
 
-      const width = Number(video.videoWidth || 0);
-      const height = Number(video.videoHeight || 0);
+      const rect = video.getBoundingClientRect?.();
+      const width = Number(video.videoWidth || video.clientWidth || rect?.width || 0);
+      const height = Number(video.videoHeight || video.clientHeight || rect?.height || 0);
       if (width > 0 && height > 0) dimensions.push({ width, height });
+    }
+    for (const value of getXContextReferenceValues(context)) {
+      const family = getXMediaFamilyKey(value);
+      if (family) familyKeys.add(family);
     }
 
     const scored = media.map((item) => {
       let score = 0;
       if (sourceUrls.has(item.url)) score = 1000;
+      if (context.capturedMediaUrls?.has(item.url)) score = Math.max(score, 900);
 
       const family = getXMediaFamilyKey(item.url);
       if (family && familyKeys.has(family)) score = Math.max(score, 800);
 
       const itemDimensions = getXMediaDimensions(item.url);
       if (itemDimensions && dimensions.some((size) =>
-        size.width === itemDimensions.width && size.height === itemDimensions.height
+        (size.width === itemDimensions.width && size.height === itemDimensions.height) ||
+        Math.abs(
+          (size.width / size.height) - (itemDimensions.width / itemDimensions.height)
+        ) < 0.04
       )) {
-        score = Math.max(score, 400);
+        score = Math.max(score, 350);
       }
 
       return { item, score };
@@ -1399,9 +1770,35 @@ import {
       .sort((a, b) => b.score - a.score || b.item.seenAt - a.item.seenAt)
       .map(({ item }) => item);
 
-    if (scored.length) {
-      context.mediaUrls = new Set(scored.map((item) => item.url));
-      return scored;
+    // With MediaSource playback, the video element can expose only a blob URL
+    // and no dimensions. If the clicked player is visibly active, use only
+    // resources captured after this player was mounted, which recovers the
+    // HLS/DASH entry without mixing in older page media.
+    const activity = getXContextActivity(context);
+    const captureSince = context.lastActiveAt > 0
+      ? context.lastActiveAt - 60_000
+      : Number(context.createdAt || 0);
+    const activeRecent = activity && activity.score >= 500_000_000 && captureSince > 0
+      ? media
+        .filter((item) => item.seenAt >= captureSince)
+        .slice(0, 40)
+      : [];
+
+    if (scored.length || activeRecent.length) {
+      const selected = [
+        ...scored,
+        ...activeRecent.filter((item) => !scored.some((entry) => entry.url === item.url))
+      ];
+      // Prefer an HLS manifest in the visible player's recent request window.
+      // X often requests a series of init/media MP4 fragments after the
+      // manifest; keeping the manifest near the front prevents those
+      // temporary fragments from occupying all visible rows.
+      selected.sort((a, b) => {
+        const typeScore = (item) => item.type === 'hls' ? 1 : 0;
+        return typeScore(b) - typeScore(a) || b.seenAt - a.seenAt;
+      });
+      context.mediaUrls = new Set(selected.map((item) => item.url));
+      return selected;
     }
 
     // If X has replaced the DOM node while the panel remains open, retain the
@@ -1574,7 +1971,8 @@ import {
     fileHandle,
     preferredKind,
     expectedBytes = 0,
-    onProgress
+    onProgress,
+    task = null
   }) {
     const [videoConfig, audioConfig, outputChoice] = await Promise.all([
       videoTrack.getDecoderConfig(),
@@ -1620,6 +2018,7 @@ import {
     const copyTrack = async (sink, source, decoderConfig) => {
       let first = true;
       for await (const packet of sink.packets()) {
+        await waitForDownloadTask(task);
         if (first) {
           await source.add(packet, { decoderConfig });
           first = false;
@@ -1631,6 +2030,7 @@ import {
     };
 
     try {
+      await waitForDownloadTask(task);
       await output.start();
       await Promise.all([
         copyTrack(videoSink, videoSource, videoConfig),
@@ -1658,7 +2058,7 @@ import {
     }
   }
 
-  async function remuxYoutubeFormat(info, videoFormat, audioFormat, fileHandle, onProgress) {
+  async function remuxYoutubeFormat(info, videoFormat, audioFormat, fileHandle, onProgress, task = null) {
     const [videoUrl, audioUrl] = await Promise.all([
       decipherYoutubeFormat(info, videoFormat),
       decipherYoutubeFormat(info, audioFormat)
@@ -1694,7 +2094,8 @@ import {
       fileHandle,
       preferredKind: mimeContainer(videoFormat.mime_type),
       expectedBytes: Number(videoFormat.content_length || 0) + Number(audioFormat.content_length || 0),
-      onProgress
+      onProgress,
+      task
     });
   }
 
@@ -1769,7 +2170,7 @@ import {
     return await gmFetch(input, { ...init, headers });
   }
 
-  async function remuxYoutubeSabrFormat(info, pair, fileHandle, onProgress) {
+  async function remuxYoutubeSabrFormat(info, pair, fileHandle, onProgress, task = null) {
     const rawServerUrl = info?.streaming_data?.server_abr_streaming_url;
     const ustreamerConfig = info?.player_config?.media_common_config
       ?.media_ustreamer_request_config?.video_playback_ustreamer_config;
@@ -1828,7 +2229,8 @@ import {
         fileHandle,
         preferredKind: mimeContainer(pair.rawVideo?.mime_type),
         expectedBytes: Number(pair.video.contentLength || 0) + Number(pair.audio.contentLength || 0),
-        onProgress
+        onProgress,
+        task
       });
     } finally {
       try { videoInput.dispose(); } catch { /* ignore */ }
@@ -1958,6 +2360,7 @@ import {
           height,
           videoCodec,
           audioCodec,
+          totalBytes: header.totalBytes,
           suggestedName: header.suggestedName
         };
       }
@@ -1972,6 +2375,7 @@ import {
         height,
         videoCodec,
         audioCodec,
+        totalBytes: header.totalBytes,
         extension: output.extension,
         suggestedName: header.suggestedName,
         fragmented: header.fragmented,
@@ -2003,7 +2407,95 @@ import {
     });
   }
 
-  function directDownload(url, name, onProgress) {
+  async function downloadRemoteToFile(url, fileHandle, task, expectedBytes = 0, onProgress) {
+    assertAllowedNetworkUrl(url);
+    const requestUrl = new URL(url);
+    ['range', 'rn', 'rbuf'].forEach((parameter) => requestUrl.searchParams.delete(parameter));
+    const writer = await fileHandle.createWritable();
+    const chunkSize = 4 * 1024 * 1024;
+    let position = 0;
+    let total = Number(expectedBytes) > 0 ? Number(expectedBytes) : 0;
+    let closed = false;
+
+    const report = () => {
+      if (typeof onProgress !== 'function') return;
+      onProgress({
+        loaded: position,
+        total,
+        ratio: total > 0 ? Math.min(position / total, 1) : null
+      });
+    };
+
+    try {
+      while (true) {
+        await waitForDownloadTask(task);
+        if (total > 0 && position >= total) break;
+
+        const end = total > 0
+          ? Math.min(total - 1, position + chunkSize - 1)
+          : position + chunkSize - 1;
+        const controller = new AbortController();
+        task.controller = controller;
+        let response;
+        try {
+          response = await gmFetch(requestUrl.href, {
+            headers: { Range: `bytes=${position}-${end}` },
+            signal: controller.signal
+          });
+        } catch (error) {
+          if (task.paused && !task.cancelRequested && error?.name === 'AbortError') {
+            await waitForDownloadTask(task);
+            continue;
+          }
+          throw error;
+        } finally {
+          if (task.controller === controller) task.controller = null;
+        }
+
+        const contentRange = parseContentRange(response.headers.get('content-range'));
+        if (response.status === 416 && contentRange?.total != null && position >= contentRange.total) {
+          total = contentRange.total;
+          break;
+        }
+        if (!response.ok && response.status !== 206) {
+          throw new Error(`下载媒体失败（HTTP ${response.status}）。`);
+        }
+
+        const bytes = new Uint8Array(await response.arrayBuffer());
+        await waitForDownloadTask(task);
+        if (!bytes.length) throw new Error('下载返回了空数据。');
+
+        if (response.status === 200) {
+          if (position !== 0) throw new Error('媒体服务器未支持断点续传，无法继续暂停后的下载。');
+          total = bytes.length;
+          await writer.write(bytes);
+          position = bytes.length;
+          report();
+          break;
+        }
+
+        if (contentRange?.start != null && contentRange.start !== position) {
+          throw new Error(`媒体分片起点异常：期望 ${position}，实际 ${contentRange.start}。`);
+        }
+        if (contentRange?.total != null) total = contentRange.total;
+        await writer.write({ type: 'write', position, data: bytes });
+        position += bytes.length;
+        if (!total && bytes.length < chunkSize) total = position;
+        report();
+      }
+
+      await writer.close();
+      closed = true;
+      report();
+    } catch (error) {
+      if (!closed) {
+        try { await writer.abort(); } catch { /* ignore cleanup failure */ }
+      }
+      throw error;
+    }
+  }
+
+  function directDownload(url, name, onProgress, task = null) {
     assertAllowedNetworkUrl(url);
     return new Promise((resolve, reject) => {
       const fail = (error) => {
@@ -2019,7 +2511,7 @@ import {
       };
 
       try {
-        GM_download({
+        const download = GM_download({
           url,
           name,
           saveAs: true,
@@ -2042,6 +2534,7 @@ import {
             fail({ error: 'not_succeeded', details: error?.details || '下载超时' });
           }
         });
+        if (task) task.cancel = () => download?.abort?.();
       } catch (error) {
         fail({ error: error?.message || 'not_succeeded', details: error?.details });
       }
@@ -2102,6 +2595,15 @@ import {
       #${PANEL_ID} .ytx-status { margin:9px 0 2px; padding:9px; border-radius:7px; background:#222; white-space:pre-wrap; }
       #${PANEL_ID} .ytx-status.error { color:#ff9f9f; }
       #${PANEL_ID} .ytx-status.ok { color:#9fffb5; }
+      #${PANEL_ID} .ytx-tasks { margin-top:10px; padding-top:9px; border-top:1px solid #383838; }
+      #${PANEL_ID} .ytx-tasks-title { color:#bbb; font-weight:650; margin-bottom:6px; }
+      #${PANEL_ID} .ytx-task { padding:8px; margin:5px 0; border-radius:7px; background:#222; }
+      #${PANEL_ID} .ytx-task-line { display:flex; align-items:center; gap:7px; }
+      #${PANEL_ID} .ytx-task-name { flex:1; min-width:0; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+      #${PANEL_ID} .ytx-task-state { color:#aaa; font-size:11px; white-space:nowrap; }
+      #${PANEL_ID} .ytx-task-progress { color:#aaa; margin-top:3px; font-size:11px; word-break:break-word; }
+      #${PANEL_ID} .ytx-task-actions { display:flex; gap:5px; margin-top:6px; }
+      #${PANEL_ID} .ytx-task-actions button { padding:4px 7px; font-size:11px; }
       #${PANEL_ID} .ytx-security { margin-top:12px; padding-top:9px; border-top:1px solid #383838; color:#888; font-size:11px; }
       #${PANEL_ID} .ytx-loading { padding:18px 4px; color:#bbb; }
     `;
@@ -2320,12 +2822,17 @@ import {
     const body = document.createElement('div');
     body.dataset.role = 'body';
 
+    const tasks = document.createElement('div');
+    tasks.dataset.role = 'tasks';
+    tasks.className = 'ytx-tasks';
+    tasks.hidden = true;
+
     const security = document.createElement('div');
     security.className = 'ytx-security';
     security.textContent = '运行时网络白名单：YouTube / googlevideo.com / video.twimg.com；无第三方解析站、广告、统计、返利链接。';
 
     head.append(titleElement, refreshButton, closeButton);
-    p.append(head, body, security);
+    p.append(head, body, tasks, security);
 
     closeButton.onclick = () => {
       removePanel();
@@ -2336,6 +2843,7 @@ import {
       try { p.showPopover(); } catch { /* older or restricted browser */ }
     }
     installPanelDrag(p, head);
+    renderDownloadTasks();
     positionPanel(anchor);
 
     if (typeof ResizeObserver === 'function') {
@@ -2432,30 +2940,24 @@ import {
         const secondary = `${codec} · ${size} · itag ${pair.video.itag} · YouTube Server ABR，浏览器内合并音频`;
 
         const row = createFormatRow(primary, secondary, async () => {
-          if (state.busy) {
-            setStatus('已有下载/合并任务正在进行，请完成后再开始下一个。');
-            return;
-          }
-
           try {
             const fileHandle = await pickSaveFile(
               `${title} [${quality}${fps ? ` ${fps}` : ''}].${container}`,
               container
             );
-            state.busy = true;
-            setStatus(`正在通过 YouTube SABR 拉取 ${quality} 视频和音频……`);
-            await remuxYoutubeSabrFormat(sabrInfo, pair, fileHandle, ({ bytes, ratio }) => {
-              if (ratio == null) {
-                setStatus(`正在浏览器内合并 SABR 流……\n已写入 ${formatBytes(bytes)}`);
-              } else {
-                setStatus(`正在浏览器内合并 SABR 流……\n${(ratio * 100).toFixed(1)}% · 已写入 ${formatBytes(bytes)}`);
-              }
+            enqueueDownload(`${title} [${quality}${fps ? ` ${fps}` : ''}].${container}`, async (task) => {
+              setDownloadTaskProgress(task, `正在通过 YouTube SABR 拉取 ${quality} 视频和音频……`);
+              await remuxYoutubeSabrFormat(sabrInfo, pair, fileHandle, ({ bytes, ratio }) => {
+                if (ratio == null) {
+                  setDownloadTaskProgress(task, `正在浏览器内合并 SABR 流……\n已写入 ${formatBytes(bytes)}`);
+                } else {
+                  setDownloadTaskProgress(task, `正在浏览器内合并 SABR 流……\n${(ratio * 100).toFixed(1)}% · 已写入 ${formatBytes(bytes)}`);
+                }
+              }, task);
+              setDownloadTaskProgress(task, '完成：SABR 视频和音频已经在浏览器内无损合并并写入文件。');
             });
-            setStatus('完成：SABR 视频和音频已经在浏览器内无损合并并写入文件。', 'ok');
           } catch (error) {
             if (error?.name !== 'AbortError') showError(error);
-          } finally {
-            state.busy = false;
           }
         });
         body.appendChild(row);
@@ -2506,11 +3008,6 @@ import {
         const secondary = `${codec} · ${size} · itag ${format.itag} · ${mode}`;
 
         const row = createFormatRow(primary, secondary, async () => {
-          if (state.busy) {
-            setStatus('已有下载/合并任务正在进行，请完成后再开始下一个。');
-            return;
-          }
-
           try {
             if (hasSeparateAudio) {
               // Must be called directly from the user's click to preserve transient
@@ -2520,37 +3017,46 @@ import {
                 `${title} [${quality}${fps ? ` ${fps}` : ''}].${extension}`,
                 extension
               );
-
-              state.busy = true;
-              setStatus('正在解析 YouTube 签名并准备媒体流……');
-
-              await remuxYoutubeFormat(info, format, audio, fileHandle, ({ bytes, ratio }) => {
-                if (ratio == null) {
-                  setStatus(`正在浏览器内无损合并……\n已写入 ${formatBytes(bytes)}`);
-                } else {
-                  setStatus(`正在浏览器内无损合并……\n${(ratio * 100).toFixed(1)}% · 已写入 ${formatBytes(bytes)}`);
-                }
+              enqueueDownload(`${title} [${quality}${fps ? ` ${fps}` : ''}].${extension}`, async (task) => {
+                setDownloadTaskProgress(task, '正在解析 YouTube 签名并准备媒体流……');
+                await remuxYoutubeFormat(info, format, audio, fileHandle, ({ bytes, ratio }) => {
+                  if (ratio == null) {
+                    setDownloadTaskProgress(task, `正在浏览器内无损合并……\n已写入 ${formatBytes(bytes)}`);
+                  } else {
+                    setDownloadTaskProgress(task, `正在浏览器内无损合并……\n${(ratio * 100).toFixed(1)}% · 已写入 ${formatBytes(bytes)}`);
+                  }
+                }, task);
+                setDownloadTaskProgress(task, '完成：视频和音频已经在浏览器内无损合并并写入文件。');
               });
-
-              setStatus('完成：视频和音频已经在浏览器内无损合并并写入文件。', 'ok');
             } else {
-              state.busy = true;
-              setStatus('正在解析 YouTube 媒体直链……');
-              const url = await decipherYoutubeFormat(info, format);
-              setStatus('已请求 Tampermonkey 开始下载。若未出现保存窗口，文件会进入浏览器默认下载目录；正在等待进度……');
-              await directDownload(url, `${title} [${quality}].${container}`, ({ loaded, ratio }) => {
-                if (ratio == null) {
-                  setStatus(`Tampermonkey 正在下载……\n已接收 ${formatBytes(loaded)}`);
+              const name = `${title} [${quality}].${container}`;
+              let fileHandle = null;
+              if (typeof window.showSaveFilePicker === 'function') {
+                fileHandle = await pickSaveFile(name, container);
+              }
+              enqueueDownload(name, async (task) => {
+                const url = await decipherYoutubeFormat(info, format);
+                if (fileHandle) {
+                  setDownloadTaskProgress(task, '正在下载 YouTube 媒体……');
+                  await downloadRemoteToFile(url, fileHandle, task, Number(format.content_length || 0), ({ loaded, total, ratio }) => {
+                    setDownloadTaskProgress(task, ratio == null
+                      ? `正在下载 YouTube 媒体……\n已接收 ${formatBytes(loaded)}`
+                      : `正在下载 YouTube 媒体……\n${(ratio * 100).toFixed(1)}% · ${formatBytes(loaded)} / ${formatBytes(total)}`);
+                  });
                 } else {
-                  setStatus(`Tampermonkey 正在下载……\n${(ratio * 100).toFixed(1)}% · 已接收 ${formatBytes(loaded)}`);
+                  task.pauseSupported = false;
+                  setDownloadTaskProgress(task, '正在通过 Tampermonkey 下载……');
+                  await directDownload(url, name, ({ loaded, ratio }) => {
+                    setDownloadTaskProgress(task, ratio == null
+                      ? `Tampermonkey 正在下载……\n已接收 ${formatBytes(loaded)}`
+                      : `Tampermonkey 正在下载……\n${(ratio * 100).toFixed(1)}% · 已接收 ${formatBytes(loaded)}`);
+                  }, task);
                 }
+                setDownloadTaskProgress(task, '下载完成：文件已保存到本机。');
               });
-              setStatus('下载完成：Tampermonkey 已将文件保存到本机。', 'ok');
             }
           } catch (error) {
             if (error?.name !== 'AbortError') showError(error);
-          } finally {
-            state.busy = false;
           }
         });
 
@@ -2598,27 +3104,33 @@ import {
 
           if (analysis.mode === 'direct') {
             const row = createFormatRow(primary, `${analysis.videoCodec || '视频'} + ${analysis.audioCodec || '音频'} · 已确认是完整 MP4，直接下载`, async () => {
-              if (state.busy) {
-                setStatus('已有下载任务正在进行，请完成后再开始下一个。');
-                return;
-              }
-
-              state.busy = true;
               try {
                 const downloadName = getXDownloadName(item, analysis, 'mp4', itemIndex, context);
-                setStatus(`正在通过 Tampermonkey 下载 ${downloadName}…`);
-                await directDownload(item.url, downloadName, ({ loaded, ratio }) => {
-                  if (ratio == null) {
-                    setStatus(`Tampermonkey 正在下载…\n已接收 ${formatBytes(loaded)}`);
+                let fileHandle = null;
+                if (typeof window.showSaveFilePicker === 'function') {
+                  fileHandle = await pickSaveFile(downloadName, 'mp4');
+                }
+                enqueueDownload(downloadName, async (task) => {
+                  if (fileHandle) {
+                    setDownloadTaskProgress(task, `正在下载 ${downloadName}…`);
+                    await downloadRemoteToFile(item.url, fileHandle, task, Number(analysis.totalBytes || 0), ({ loaded, total, ratio }) => {
+                      setDownloadTaskProgress(task, ratio == null
+                        ? `正在下载 ${downloadName}…\n已接收 ${formatBytes(loaded)}`
+                        : `正在下载 ${downloadName}…\n${(ratio * 100).toFixed(1)}% · ${formatBytes(loaded)} / ${formatBytes(total)}`);
+                    });
                   } else {
-                    setStatus(`Tampermonkey 正在下载…\n${(ratio * 100).toFixed(1)}% · 已接收 ${formatBytes(loaded)}`);
+                    task.pauseSupported = false;
+                    setDownloadTaskProgress(task, `正在通过 Tampermonkey 下载 ${downloadName}…`);
+                    await directDownload(item.url, downloadName, ({ loaded, ratio }) => {
+                      setDownloadTaskProgress(task, ratio == null
+                        ? `Tampermonkey 正在下载…\n已接收 ${formatBytes(loaded)}`
+                        : `Tampermonkey 正在下载……\n${(ratio * 100).toFixed(1)}% · 已接收 ${formatBytes(loaded)}`);
+                    }, task);
                   }
+                  setDownloadTaskProgress(task, `下载完成：${downloadName}`);
                 });
-                setStatus(`下载完成：${downloadName}`, 'ok');
               } catch (error) {
                 if (error?.name !== 'AbortError') showError(error);
-              } finally {
-                state.busy = false;
               }
             });
             placeholder.replaceWith(row);
@@ -2632,34 +3144,27 @@ import {
           const primaryText = `${primary}${reason ? ` · ${reason}` : ''}`;
           const secondary = `${analysis.videoCodec || '视频'} + ${analysis.audioCodec || '音频'} · 浏览器内无损封装`;
           placeholder.replaceWith(createFormatRow(primaryText, secondary, async () => {
-            if (state.busy) {
-              setStatus('已有下载/合并任务正在进行，请完成后再开始下一个。');
-              return;
-            }
-
             try {
               const downloadName = getXDownloadName(item, analysis, 'mp4', itemIndex, context);
               const fileHandle = await pickSaveFile(downloadName, 'mp4');
-              state.busy = true;
-              setStatus(`正在读取 X ${reason || 'MP4'} 并在浏览器内无损封装……`);
-
-              await remuxTracksToFile({
-                videoTrack: analysis.videoTrack,
-                audioTrack: analysis.audioTrack,
-                inputs: analysis.inputs,
-                fileHandle,
-                preferredKind: 'mp4',
-                expectedBytes: 0,
-                onProgress: ({ bytes }) => {
-                  setStatus(`正在读取 X ${reason || 'MP4'} 并封装……\n已写入 ${formatBytes(bytes)}`);
-                }
-              });
-
-              setStatus('完成：X 视频和音频已在浏览器内封装为可播放文件。', 'ok');
+              enqueueDownload(downloadName, async (task) => {
+                setDownloadTaskProgress(task, `正在读取 X ${reason || 'MP4'} 并在浏览器内无损封装……`);
+                await remuxTracksToFile({
+                  videoTrack: analysis.videoTrack,
+                  audioTrack: analysis.audioTrack,
+                  inputs: analysis.inputs,
+                  fileHandle,
+                  preferredKind: 'mp4',
+                  expectedBytes: 0,
+                  onProgress: ({ bytes }) => {
+                    setDownloadTaskProgress(task, `正在读取 X ${reason || 'MP4'} 并封装……\n已写入 ${formatBytes(bytes)}`);
+                  },
+                  task
+                });
+                setDownloadTaskProgress(task, '完成：X 视频和音频已在浏览器内封装为可播放文件。');
+              }, { cleanup: () => analysis.inputs.forEach((input) => input.dispose()) });
             } catch (error) {
               if (error?.name !== 'AbortError') showError(error);
-            } finally {
-              state.busy = false;
             }
           }));
         } catch (error) {
@@ -2685,35 +3190,27 @@ import {
 
         placeholder.onclick = null;
         placeholder.replaceWith(createFormatRow(primary, secondary, async () => {
-          if (state.busy) {
-            setStatus('已有下载/合并任务正在进行，请完成后再开始下一个。');
-            return;
-          }
-
           try {
             const downloadName = getXDownloadName(item, analysis, analysis.extension, itemIndex, context);
             const fileHandle = await pickSaveFile(downloadName, analysis.extension);
-            state.busy = true;
-            setStatus('正在读取 X HLS 分片并在浏览器内无损封装……');
-
-            await remuxTracksToFile({
-              videoTrack: analysis.videoTrack,
-              audioTrack: analysis.audioTrack,
-              inputs: [analysis.input],
-              fileHandle,
-              preferredKind: analysis.extension,
-              expectedBytes: 0,
-              onProgress: ({ bytes }) => {
-                setStatus(`正在读取 X HLS 并封装……\n已写入 ${formatBytes(bytes)}`);
-              }
-            });
-
-            setStatus('完成：X 视频已写入本地文件。', 'ok');
+            enqueueDownload(downloadName, async (task) => {
+              setDownloadTaskProgress(task, '正在读取 X HLS 分片并在浏览器内无损封装……');
+              await remuxTracksToFile({
+                videoTrack: analysis.videoTrack,
+                audioTrack: analysis.audioTrack,
+                inputs: [analysis.input],
+                fileHandle,
+                preferredKind: analysis.extension,
+                expectedBytes: 0,
+                onProgress: ({ bytes }) => {
+                  setDownloadTaskProgress(task, `正在读取 X HLS 并封装……\n已写入 ${formatBytes(bytes)}`);
+                },
+                task
+              });
+              setDownloadTaskProgress(task, '完成：X 视频已写入本地文件。');
+            }, { cleanup: () => analysis.input.dispose() });
           } catch (error) {
-            try { analysis.input.dispose(); } catch { /* ignore */ }
             if (error?.name !== 'AbortError') showError(error);
-          } finally {
-            state.busy = false;
           }
         }));
       } catch (error) {
@@ -2841,23 +3338,60 @@ import {
     return action?.closest?.('[role="group"]') || null;
   }
 
+  function bindXContextActivity(context) {
+    context.boundVideos ||= new WeakSet();
+    for (const video of getXContextVideoElements(context)) {
+      if (context.boundVideos.has(video)) continue;
+      const markActive = () => { context.lastActiveAt = performance.now(); };
+      video.addEventListener('play', markActive, { passive: true });
+      video.addEventListener('playing', markActive, { passive: true });
+      if (!video.paused) markActive();
+      context.boundVideos.add(video);
+    }
+  }
+
   function createXButtonContext(button, player, article) {
-    const context = { button, player, article, videoElements: [] };
+    const context = {
+      button,
+      player,
+      article,
+      videoElements: [],
+      boundVideos: new WeakSet(),
+      capturedMediaUrls: new Set(),
+      mediaUrls: new Set(),
+      lastActiveAt: 0,
+      lastMediaAt: 0,
+      createdAt: performance.now()
+    };
     context.videoElements = getXContextVideoElements(context);
+    state.xContexts.add(context);
+    bindXContextActivity(context);
+    return context;
+  }
+
+  function updateXButtonContext(button, player, article) {
+    let context = state.xButtonContexts.get(button);
+    if (!context || context.player !== player || context.article !== article) {
+      context = createXButtonContext(button, player, article);
+      state.xButtonContexts.set(button, context);
+    } else {
+      context.videoElements = getXContextVideoElements(context);
+      bindXContextActivity(context);
+    }
     return context;
   }
 
   function getXButtonContext(button) {
     let context = state.xButtonContexts.get(button);
     if (!context) {
-      context = createXButtonContext(
+      context = updateXButtonContext(
         button,
         null,
         button.closest?.('article, [role="article"], [data-testid="tweet"]') || null
       );
-      state.xButtonContexts.set(button, context);
     }
     context.videoElements = getXContextVideoElements(context);
+    bindXContextActivity(context);
     return context;
   }
 
@@ -2879,7 +3413,7 @@ import {
         (player.nextElementSibling?.matches?.('.ytx-x-download-slot') ? player.nextElementSibling : null);
       const existingButton = existingSlot?.querySelector(`.${BUTTON_CLASS}.ytx-x-button`);
       if (existingButton) {
-        state.xButtonContexts.set(existingButton, createXButtonContext(existingButton, player, article));
+        updateXButtonContext(existingButton, player, article);
         continue;
       }
 
@@ -2888,7 +3422,7 @@ import {
       slot.dataset.ytxVideoDownload = 'true';
       const button = createContextButton('↓ 视频下载', '在这条 X 视频下方打开下载选项', 'ytx-x-button', 'x');
       slot.appendChild(button);
-      state.xButtonContexts.set(button, createXButtonContext(button, player, article));
+      updateXButtonContext(button, player, article);
 
       // Prefer the stable gap immediately before X's reply/retweet/like bar.
       // This keeps the button below the media and out of the player's clipped
@@ -2990,6 +3524,7 @@ import {
     if (!isYoutubeHost() && !isXHost()) return;
     ensureContextButtons();
     installYoutubeNetworkCapture();
+    installXNetworkCapture();
     scanPerformanceForYoutubeMedia();
     scanPerformanceForXMedia();
     observeDynamicPage();

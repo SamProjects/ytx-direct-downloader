@@ -747,11 +747,22 @@ import {
   }
 
   function getYoutubePlayerResponseFromPage(videoId) {
-    const candidates = [
-      globalThis.ytInitialPlayerResponse,
-      globalThis.ytplayer?.config?.args?.player_response,
-      globalThis.ytplayer?.config?.player_response
-    ];
+    const candidates = [];
+    const pageWindow = typeof unsafeWindow !== 'undefined' ? unsafeWindow : window;
+    // The live player follows SPA navigation; initial inline data may be stale.
+    try {
+      const player = pageWindow.document.getElementById('movie_player');
+      if (typeof player?.getPlayerResponse === 'function') {
+        candidates.push(player.getPlayerResponse());
+      }
+    } catch { /* Fall back when the manager prevents access to page objects. */ }
+    for (const scope of [pageWindow, globalThis]) {
+      try {
+        candidates.push(scope.ytInitialPlayerResponse,
+          scope.ytplayer?.config?.args?.player_response,
+          scope.ytplayer?.config?.player_response);
+      } catch { /* Continue with readable DOM data. */ }
+    }
 
     const accept = (candidate) => {
       if (typeof candidate === 'string') {
@@ -1101,7 +1112,11 @@ import {
       throw new Error(`YouTube 客户端初始化失败。${errors.length ? `\n${errors.join('\n')}` : ''}`);
     }
 
-    throw new Error(`无法取得 YouTube 媒体信息。${errors.length ? `\n${errors.join('\n')}` : ''}`);
+    const loginRequired = errors.some((message) => /LOGIN_REQUIRED|确认你的年龄|确认您的年龄/.test(message));
+    const hint = loginRequired
+      ? '部分 YouTube 接口要求登录或年龄验证。请确认该视频在当前账号下能正常播放，再刷新页面重试；如果网页已能播放，请反馈浏览器、脚本管理器及其版本和视频链接，以排查页面会话读取问题。'
+      : '请先确认当前网页能正常播放该视频，再刷新重试。';
+    throw new Error(`无法取得 YouTube 媒体信息。${hint}${errors.length ? `\n${errors.join('\n')}` : ''}`);
   }
 
   function getYoutubeVideoFormats(info) {
@@ -2392,19 +2407,27 @@ import {
   // ---------------------------------------------------------------------------
   // Save / direct download
   // ---------------------------------------------------------------------------
+  function getSavePickerWindow() {
+    // Native Window methods require the actual page Window as their receiver.
+    // Tampermonkey's sandbox proxy can otherwise cause Illegal invocation.
+    const pageWindow = typeof unsafeWindow !== 'undefined' ? unsafeWindow : window;
+    return typeof pageWindow.showSaveFilePicker === 'function' ? pageWindow : null;
+  }
+
   async function pickSaveFile(suggestedName, extension) {
-    if (typeof window.showSaveFilePicker !== 'function') {
+    const pickerWindow = getSavePickerWindow();
+    if (!pickerWindow) {
       throw new Error('当前浏览器不支持 File System Access API。1080p+ 浏览器内合并建议使用最新版 Chrome/Edge。');
     }
 
     const mime = extension === 'webm' ? 'video/webm' : 'video/mp4';
-    return await window.showSaveFilePicker({
+    return await Reflect.apply(pickerWindow.showSaveFilePicker, pickerWindow, [{
       suggestedName,
       types: [{
         description: extension.toUpperCase(),
         accept: { [mime]: [`.${extension}`] }
       }]
-    });
+    }]);
   }
 
   async function downloadRemoteToFile(url, fileHandle, task, expectedBytes = 0, onProgress) {
@@ -3031,7 +3054,7 @@ import {
             } else {
               const name = `${title} [${quality}].${container}`;
               let fileHandle = null;
-              if (typeof window.showSaveFilePicker === 'function') {
+              if (getSavePickerWindow()) {
                 fileHandle = await pickSaveFile(name, container);
               }
               enqueueDownload(name, async (task) => {
@@ -3107,7 +3130,7 @@ import {
               try {
                 const downloadName = getXDownloadName(item, analysis, 'mp4', itemIndex, context);
                 let fileHandle = null;
-                if (typeof window.showSaveFilePicker === 'function') {
+                if (getSavePickerWindow()) {
                   fileHandle = await pickSaveFile(downloadName, 'mp4');
                 }
                 enqueueDownload(downloadName, async (task) => {

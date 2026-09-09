@@ -1,3 +1,4 @@
+import { isChinese } from './i18n.js';
 import { Innertube, Parser, Platform, YTNodes, SabrStream } from './runtime.js';
 import {
   ALL_FORMATS,
@@ -334,14 +335,14 @@ import {
 
   function formatBytes(value) {
     const n = Number(value);
-    if (!Number.isFinite(n) || n <= 0) return '未知大小';
+    if (!Number.isFinite(n) || n <= 0) return (isChinese ? '未知大小' : "Unknown size");
     if (n >= 1024 ** 3) return `${(n / 1024 ** 3).toFixed(2)} GB`;
     if (n >= 1024 ** 2) return `${(n / 1024 ** 2).toFixed(2)} MB`;
     return `${(n / 1024).toFixed(1)} KB`;
   }
 
   function createDownloadAbortError() {
-    return new DOMException('下载任务已取消。', 'AbortError');
+    return new DOMException((isChinese ? '下载任务已取消。' : "Download cancelled."), 'AbortError');
   }
 
   function renderDownloadTasks() {
@@ -355,16 +356,16 @@ import {
 
     const title = document.createElement('div');
     title.className = 'ytx-tasks-title';
-    title.textContent = `下载队列（${state.downloadQueue.filter((task) => task.status === 'queued').length} 个等待中）`;
+    title.textContent = (isChinese ? `下载队列（${state.downloadQueue.filter((task) => task.status === 'queued').length} 个等待中）` : `Download queue (${state.downloadQueue.filter((task) => task.status === 'queued').length} waiting)`);
     container.appendChild(title);
 
     const labels = {
-      queued: '等待中',
-      running: '进行中',
-      paused: '已暂停',
-      completed: '已完成',
-      failed: '失败',
-      cancelled: '已取消'
+      queued: (isChinese ? '等待中' : "Queued"),
+      running: (isChinese ? '进行中' : "Running"),
+      paused: (isChinese ? '已暂停' : "Paused"),
+      completed: (isChinese ? '已完成' : "Completed"),
+      failed: (isChinese ? '失败' : "Failed"),
+      cancelled: (isChinese ? '已取消' : "Cancelled")
     };
 
     for (const task of tasks.slice().reverse()) {
@@ -397,7 +398,7 @@ import {
         if (task.status === 'paused' || task.status === 'queued') {
           const pauseButton = document.createElement('button');
           pauseButton.type = 'button';
-          pauseButton.textContent = task.status === 'paused' ? '继续' : '暂停';
+          pauseButton.textContent = task.status === 'paused' ? (isChinese ? '继续' : "Resume") : (isChinese ? '暂停' : "Pause");
           pauseButton.onclick = (event) => {
             event.stopPropagation();
             if (task.status === 'paused') resumeDownloadTask(task);
@@ -407,7 +408,7 @@ import {
         } else if (task.pauseSupported !== false) {
           const pauseButton = document.createElement('button');
           pauseButton.type = 'button';
-          pauseButton.textContent = '暂停';
+          pauseButton.textContent = (isChinese ? '暂停' : "Pause");
           pauseButton.onclick = (event) => {
             event.stopPropagation();
             pauseDownloadTask(task);
@@ -417,7 +418,7 @@ import {
 
         const cancelButton = document.createElement('button');
         cancelButton.type = 'button';
-        cancelButton.textContent = '取消';
+        cancelButton.textContent = (isChinese ? '取消' : "Cancel");
         cancelButton.onclick = (event) => {
           event.stopPropagation();
           cancelDownloadTask(task);
@@ -453,7 +454,7 @@ import {
   function pauseDownloadTask(task) {
     if (!task || !['queued', 'running'].includes(task.status)) return;
     if (task.status === 'running' && task.pauseSupported === false) {
-      setStatus('当前下载方式不支持暂停，只能取消；浏览器内下载任务支持暂停。', 'error');
+      setStatus((isChinese ? '当前下载方式不支持暂停，只能取消；浏览器内下载任务支持暂停。' : "This download method supports cancellation only. Local browser downloads also support pause."), 'error');
       return;
     }
     task.paused = true;
@@ -490,7 +491,7 @@ import {
     if (state.currentDownload !== task) cleanupDownloadTask(task);
     if (task.status !== 'running') {
       task.status = 'cancelled';
-      task.progressText = '任务已取消';
+      task.progressText = (isChinese ? '任务已取消' : "Task cancelled");
     }
     const waiters = task.resumeWaiters || [];
     task.resumeWaiters = [];
@@ -505,7 +506,7 @@ import {
       label,
       run,
       status: 'queued',
-      progressText: '等待队列执行……',
+      progressText: (isChinese ? '等待队列执行……' : "Waiting in queue..."),
       pauseSupported: options.pauseSupported !== false,
       paused: false,
       cancelRequested: false,
@@ -533,19 +534,19 @@ import {
         if (!task) break;
         state.currentDownload = task;
         task.status = 'running';
-        task.progressText = '正在启动……';
+        task.progressText = (isChinese ? '正在启动……' : "Starting...");
         renderDownloadTasks();
         try {
           await task.run(task);
           task.status = task.cancelRequested ? 'cancelled' : 'completed';
-          task.progressText = task.cancelRequested ? '任务已取消' : '任务已完成';
+          task.progressText = task.cancelRequested ? (isChinese ? '任务已取消' : "Task cancelled") : (isChinese ? '任务已完成' : "Task completed");
         } catch (error) {
           if (task.cancelRequested || error?.name === 'AbortError') {
             task.status = 'cancelled';
-            task.progressText = '任务已取消';
+            task.progressText = (isChinese ? '任务已取消' : "Task cancelled");
           } else {
             task.status = 'failed';
-            task.progressText = `失败：${error?.message || error}`;
+            task.progressText = (isChinese ? `失败：${error?.message || error}` : `Failed: ${error?.message || error}`);
             setStatus(task.progressText, 'error');
           }
         } finally {
@@ -586,7 +587,7 @@ import {
     if (lower.includes('mp4a')) return `AAC${codecs ? ` (${codecs})` : ''}`;
     if (lower.includes('opus')) return 'Opus';
     if (lower.includes('vorbis')) return 'Vorbis';
-    return codecs || '未知编码';
+    return codecs || (isChinese ? '未知编码' : "Unknown codec");
   }
 
   function isYoutubeHost() {
@@ -624,7 +625,7 @@ import {
   function showError(error) {
     console.error(`[${APP}]`, error);
     const message = error?.message || String(error);
-    setStatus(`失败：${message}`, 'error');
+    setStatus((isChinese ? `失败：${message}` : `Failed: ${message}`), 'error');
   }
 
   // ---------------------------------------------------------------------------
@@ -673,7 +674,7 @@ import {
       }
     }
 
-    throw new Error(`YouTube 页面拒绝创建 TrustedScript 策略：${lastError?.message || lastError || '没有可用的 Trusted Types 环境'}`);
+    throw new Error((isChinese ? `YouTube 页面拒绝创建 TrustedScript 策略：${lastError?.message || lastError || (isChinese ? '没有可用的 Trusted Types 环境' : "No available Trusted Types environment")}` : `YouTube refused to create a TrustedScript policy: ${lastError?.message || lastError || (isChinese ? '没有可用的 Trusted Types 环境' : "No available Trusted Types environment")}`));
   }
 
   Platform.shim.eval = async (data) => {
@@ -688,7 +689,7 @@ import {
     const environment = getYoutubeEvalEnvironment();
     const trustedSource = environment.policy ? environment.policy.createScript(source) : source;
     if (environment.trustedTypes?.isScript && !environment.trustedTypes.isScript(trustedSource)) {
-      throw new Error(`TrustedScript 创建失败（执行环境：${environment.name}）。`);
+      throw new Error((isChinese ? `TrustedScript 创建失败（执行环境：${environment.name}）。` : `Failed to create TrustedScript (environment: ${environment.name}).`));
     }
     return Reflect.apply(environment.evaluate, environment.scope, [trustedSource]);
   };
@@ -808,7 +809,7 @@ import {
 
   function youtubePlayabilityText(info) {
     const playability = info?.playability_status;
-    if (!playability) return '没有 playabilityStatus';
+    if (!playability) return (isChinese ? '没有 playabilityStatus' : "Missing playabilityStatus");
 
     const status = playability.status || 'UNKNOWN';
     const reason = readableYoutubeText(playability.reason);
@@ -816,7 +817,7 @@ import {
     const detail =
       readableYoutubeText(errorScreen?.subreason) ||
       readableYoutubeText(errorScreen?.reason);
-    return [status, reason || detail].filter(Boolean).join('：');
+    return [status, reason || detail].filter(Boolean).join((isChinese ? '：' : ": "));
   }
 
   function parsePageYoutubeInfo(youtube, playerResponse) {
@@ -998,7 +999,7 @@ import {
     const addCandidate = (info, client) => {
       const score = scoreYoutubeInfo(info);
       if (score < 0) {
-        errors.push(`${client}: ${youtubePlayabilityText(info)}；没有可下载的视频/音频组合`);
+        errors.push((isChinese ? `${client}: ${youtubePlayabilityText(info)}；没有可下载的视频/音频组合` : `${client}: ${youtubePlayabilityText(info)}; no downloadable video/audio pair`));
         return;
       }
       candidates.push({ info, client, score });
@@ -1012,7 +1013,7 @@ import {
     try {
       youtube = await getYoutubeClient();
     } catch (error) {
-      errors.push(`客户端初始化：${error?.message || error}`);
+      errors.push((isChinese ? `客户端初始化：${error?.message || error}` : `Client initialization: ${error?.message || error}`));
     }
 
     const pageResponse = getYoutubePlayerResponseFromPage(videoId);
@@ -1029,7 +1030,7 @@ import {
         if (pageFormats.some(hasYoutubeFormatSource)) {
           addCandidate(info, 'PAGE');
         } else {
-          errors.push(`PAGE: ${youtubePlayabilityText(info)}；返回的格式没有可解码 URL，可能是 SABR 流`);
+          errors.push((isChinese ? `PAGE: ${youtubePlayabilityText(info)}；返回的格式没有可解码 URL，可能是 SABR 流` : `PAGE: ${youtubePlayabilityText(info)}; formats have no decipherable URL and may use SABR`));
         }
       } catch (error) {
         errors.push(`PAGE: ${error?.message || error}`);
@@ -1075,7 +1076,7 @@ import {
         if (formats.some(hasYoutubeFormatSource)) {
           addCandidate(result.info, result.client);
         } else {
-          errors.push(`${result.client}: ${youtubePlayabilityText(result.info)}；返回的格式没有可解码 URL，可能是 SABR 流`);
+          errors.push((isChinese ? `${result.client}: ${youtubePlayabilityText(result.info)}；返回的格式没有可解码 URL，可能是 SABR 流` : `${result.client}: ${youtubePlayabilityText(result.info)}; formats have no decipherable URL and may use SABR`));
         }
       }
     }
@@ -1109,14 +1110,14 @@ import {
     }
 
     if (!youtube) {
-      throw new Error(`YouTube 客户端初始化失败。${errors.length ? `\n${errors.join('\n')}` : ''}`);
+      throw new Error((isChinese ? `YouTube 客户端初始化失败。${errors.length ? `\n${errors.join('\n')}` : ''}` : `YouTube client initialization failed.${errors.length ? `\n${errors.join('\n')}` : ''}`));
     }
 
     const loginRequired = errors.some((message) => /LOGIN_REQUIRED|确认你的年龄|确认您的年龄/.test(message));
     const hint = loginRequired
-      ? '部分 YouTube 接口要求登录或年龄验证。请确认该视频在当前账号下能正常播放，再刷新页面重试；如果网页已能播放，请反馈浏览器、脚本管理器及其版本和视频链接，以排查页面会话读取问题。'
-      : '请先确认当前网页能正常播放该视频，再刷新重试。';
-    throw new Error(`无法取得 YouTube 媒体信息。${hint}${errors.length ? `\n${errors.join('\n')}` : ''}`);
+      ? (isChinese ? '部分 YouTube 接口要求登录或年龄验证。请确认该视频在当前账号下能正常播放，再刷新页面重试；如果网页已能播放，请反馈浏览器、脚本管理器及其版本和视频链接，以排查页面会话读取问题。' : "Some YouTube endpoints require sign-in or age verification. Confirm that this account can play the video, then reload the page. If playback already works, report your browser, userscript manager and versions, and video URL so we can investigate session access.")
+      : (isChinese ? '请先确认当前网页能正常播放该视频，再刷新重试。' : "Confirm that the video plays on this page, then refresh and try again.");
+    throw new Error((isChinese ? `无法取得 YouTube 媒体信息。${hint}${errors.length ? `\n${errors.join('\n')}` : ''}` : `Could not retrieve YouTube media information.${hint}${errors.length ? `\n${errors.join('\n')}` : ''}`));
   }
 
   function getYoutubeVideoFormats(info) {
@@ -1194,11 +1195,11 @@ import {
 
   async function decipherYoutubeFormat(info, format) {
     if (!hasYoutubeFormatSource(format)) {
-      throw new Error(`itag ${format?.itag || '?'} 没有可解码 URL；YouTube 返回的是 SABR/分段流。`);
+      throw new Error((isChinese ? `itag ${format?.itag || '?'} 没有可解码 URL；YouTube 返回的是 SABR/分段流。` : `itag ${format?.itag || '?'} has no decipherable URL; YouTube returned a SABR/segmented stream.`));
     }
 
     if (!format || typeof format.decipher !== 'function') {
-      throw new Error(`itag ${format?.itag || '?'} 不是可解码的 YouTube 格式对象。`);
+      throw new Error((isChinese ? `itag ${format?.itag || '?'} 不是可解码的 YouTube 格式对象。` : `itag ${format?.itag || '?'} is not a decipherable YouTube format object.`));
     }
 
     const cached = state.youtubeUrlCache.get(format);
@@ -1211,16 +1212,16 @@ import {
         url = await format.decipher(player);
       } catch (error) {
         if (String(error?.message || error).includes('No valid URL to decipher')) {
-          throw new Error(`itag ${format.itag || '?'} 没有可解码 URL；YouTube 返回的是 SABR/分段流。`);
+          throw new Error((isChinese ? `itag ${format.itag || '?'} 没有可解码 URL；YouTube 返回的是 SABR/分段流。` : `itag ${format.itag || '?'} has no decipherable URL; YouTube returned a SABR/segmented stream.`));
         }
         throw error;
       }
-      if (!url) throw new Error(`itag ${format.itag || '?'} 没有可用下载 URL。`);
+      if (!url) throw new Error((isChinese ? `itag ${format.itag || '?'} 没有可用下载 URL。` : `itag ${format.itag || '?'} has no download URL.`));
       assertAllowedNetworkUrl(url);
 
       const host = new URL(url).hostname.toLowerCase();
       if (!(host === 'googlevideo.com' || host.endsWith('.googlevideo.com'))) {
-        throw new Error(`YouTube 媒体 URL 不在 googlevideo.com：${host}`);
+        throw new Error((isChinese ? `YouTube 媒体 URL 不在 googlevideo.com：${host}` : `YouTube media URL is outside googlevideo.com: ${host}`));
       }
       return url;
     })();
@@ -1483,8 +1484,8 @@ import {
       .slice(0, 10)
       .map((format) => {
         const quality = format.has_video
-          ? (format.quality_label || (format.height ? `${format.height}p` : '视频'))
-          : '音频';
+          ? (format.quality_label || (format.height ? `${format.height}p` : (isChinese ? '视频' : "Video")))
+          : (isChinese ? '音频' : "Audio");
         return `${quality}/itag ${format.itag}`;
       })
       .join('、');
@@ -1894,11 +1895,11 @@ import {
       headers: { Range: 'bytes=0-524287' }
     });
     if (!response.ok && response.status !== 206) {
-      throw new Error(`无法读取 X MP4 头部（HTTP ${response.status}）。`);
+      throw new Error((isChinese ? `无法读取 X MP4 头部（HTTP ${response.status}）。` : `Cannot read X MP4 header (HTTP ${response.status}).`));
     }
 
     const bytes = new Uint8Array(await response.arrayBuffer());
-    if (bytes.length < 16) throw new Error('X MP4 头部过短，无法识别。');
+    if (bytes.length < 16) throw new Error((isChinese ? 'X MP4 头部过短，无法识别。' : "X MP4 header is too short to identify."));
 
     const scanned = scanMp4Boxes(bytes);
     const boxes = scanned.boxes;
@@ -1956,7 +1957,7 @@ import {
     ]);
 
     if (!videoCodec || !audioCodec) {
-      throw new Error(`无法识别编码：video=${videoCodec}, audio=${audioCodec}`);
+      throw new Error((isChinese ? `无法识别编码：video=${videoCodec}, audio=${audioCodec}` : `Unrecognized codecs: video=${videoCodec}, audio=${audioCodec}`));
     }
 
     const candidates = preferredKind === 'webm'
@@ -1976,7 +1977,7 @@ import {
       }
     }
 
-    throw new Error(`没有可直接封装 ${videoCodec} + ${audioCodec} 的 MP4/WebM 容器。`);
+    throw new Error((isChinese ? `没有可直接封装 ${videoCodec} + ${audioCodec} 的 MP4/WebM 容器。` : `No MP4/WebM container supports remuxing ${videoCodec} + ${audioCodec} directly.`));
   }
 
   async function remuxTracksToFile({
@@ -1995,8 +1996,8 @@ import {
       chooseOutputForTracks(videoTrack, audioTrack, preferredKind)
     ]);
 
-    if (!videoConfig) throw new Error('无法读取视频轨 DecoderConfig。');
-    if (!audioConfig) throw new Error('无法读取音频轨 DecoderConfig。');
+    if (!videoConfig) throw new Error((isChinese ? '无法读取视频轨 DecoderConfig。' : "Cannot read video DecoderConfig."));
+    if (!audioConfig) throw new Error((isChinese ? '无法读取音频轨 DecoderConfig。' : "Cannot read audio DecoderConfig."));
 
     const videoSource = new EncodedVideoPacketSource(outputChoice.videoCodec);
     const audioSource = new EncodedAudioPacketSource(outputChoice.audioCodec);
@@ -2098,8 +2099,8 @@ import {
     if (!videoTrack || !audioTrack) {
       videoInput.dispose();
       audioInput.dispose();
-      if (!videoTrack) throw new Error('YouTube 视频流中找不到视频轨。');
-      throw new Error('YouTube 音频流中找不到音频轨。');
+      if (!videoTrack) throw new Error((isChinese ? 'YouTube 视频流中找不到视频轨。' : "No video track found in the YouTube video stream."));
+      throw new Error((isChinese ? 'YouTube 音频流中找不到音频轨。' : "No audio track found in the YouTube audio stream."));
     }
 
     return await remuxTracksToFile({
@@ -2143,10 +2144,10 @@ import {
   async function decipherYoutubeServerAbrUrl(info, rawUrl) {
     const player = info?.actions?.session?.player || (await getYoutubeClient()).session.player;
     if (!player || typeof player.decipher !== 'function') {
-      throw new Error('YouTube SABR 缺少可用的 player URL 解码器。');
+      throw new Error((isChinese ? 'YouTube SABR 缺少可用的 player URL 解码器。' : "YouTube SABR has no available player URL decipherer."));
     }
     const url = await player.decipher(rawUrl);
-    if (!url) throw new Error('YouTube SABR 没有返回可用的服务器地址。');
+    if (!url) throw new Error((isChinese ? 'YouTube SABR 没有返回可用的服务器地址。' : "YouTube SABR returned no server URL."));
     assertAllowedNetworkUrl(url);
     return url;
   }
@@ -2189,8 +2190,8 @@ import {
     const rawServerUrl = info?.streaming_data?.server_abr_streaming_url;
     const ustreamerConfig = info?.player_config?.media_common_config
       ?.media_ustreamer_request_config?.video_playback_ustreamer_config;
-    if (!rawServerUrl) throw new Error('YouTube SABR 缺少 serverAbrStreamingUrl。');
-    if (!ustreamerConfig) throw new Error('YouTube SABR 缺少播放器 Ustreamer 配置。');
+    if (!rawServerUrl) throw new Error((isChinese ? 'YouTube SABR 缺少 serverAbrStreamingUrl。' : "YouTube SABR is missing serverAbrStreamingUrl."));
+    if (!ustreamerConfig) throw new Error((isChinese ? 'YouTube SABR 缺少播放器 Ustreamer 配置。' : "YouTube SABR is missing the player Ustreamer configuration."));
     const serverUrl = await decipherYoutubeServerAbrUrl(info, rawServerUrl);
 
     const durationSeconds = Number(
@@ -2234,8 +2235,8 @@ import {
         videoInput.getPrimaryVideoTrack(),
         audioInput.getPrimaryAudioTrack()
       ]);
-      if (!videoTrack) throw new Error('SABR 视频流中找不到视频轨。');
-      if (!audioTrack) throw new Error('SABR 音频流中找不到音频轨。');
+      if (!videoTrack) throw new Error((isChinese ? 'SABR 视频流中找不到视频轨。' : "No video track found in the SABR video stream."));
+      if (!audioTrack) throw new Error((isChinese ? 'SABR 音频流中找不到音频轨。' : "No audio track found in the SABR audio stream."));
 
       return await remuxTracksToFile({
         videoTrack,
@@ -2260,7 +2261,7 @@ import {
     const input = createRemoteInput(url, HLS_FORMATS);
     try {
       const videoTracks = await input.getVideoTracks();
-      if (!videoTracks.length) throw new Error('HLS 中没有视频轨。');
+      if (!videoTracks.length) throw new Error((isChinese ? 'HLS 中没有视频轨。' : "No video track found in HLS."));
 
       const enriched = await Promise.all(videoTracks.map(async (track) => ({
         track,
@@ -2280,7 +2281,7 @@ import {
         await selectedVideo.track.getPrimaryPairableAudioTrack() ||
         (await input.getAudioTracks())[0] ||
         null;
-      if (!audioTrack) throw new Error('HLS 中找不到与视频匹配的音频轨。');
+      if (!audioTrack) throw new Error((isChinese ? 'HLS 中找不到与视频匹配的音频轨。' : "No matching audio track found in HLS."));
 
       const output = await chooseOutputForTracks(selectedVideo.track, audioTrack, 'mp4');
       return {
@@ -2311,7 +2312,7 @@ import {
       inputs.push(input);
 
       const videoTrack = await input.getPrimaryVideoTrack();
-      if (!videoTrack) throw new Error('X MP4 中找不到视频轨。');
+      if (!videoTrack) throw new Error((isChinese ? 'X MP4 中找不到视频轨。' : "No video track found in X MP4."));
 
       let audioTrack = await input.getPrimaryAudioTrack();
       let pairedInput = null;
@@ -2348,7 +2349,7 @@ import {
       }
 
       if (!audioTrack) {
-        throw new Error('X MP4 只有视频轨，未找到可配对的音频轨；请播放视频后刷新，或使用检测到的 HLS 入口。');
+        throw new Error((isChinese ? 'X MP4 只有视频轨，未找到可配对的音频轨；请播放视频后刷新，或使用检测到的 HLS 入口。' : "X MP4 contains video only, with no matching audio track. Play the video and refresh, or use the detected HLS source."));
       }
 
       const [width, height, videoCodec, audioCodec] = await Promise.all([
@@ -2417,7 +2418,7 @@ import {
   async function pickSaveFile(suggestedName, extension) {
     const pickerWindow = getSavePickerWindow();
     if (!pickerWindow) {
-      throw new Error('当前浏览器不支持 File System Access API。1080p+ 浏览器内合并建议使用最新版 Chrome/Edge。');
+      throw new Error((isChinese ? '当前浏览器不支持 File System Access API。1080p+ 浏览器内合并建议使用最新版 Chrome/Edge。' : "This browser does not support the File System Access API. Use a current Chrome/Edge version for local 1080p+ merging."));
     }
 
     const mime = extension === 'webm' ? 'video/webm' : 'video/mp4';
@@ -2481,15 +2482,15 @@ import {
           break;
         }
         if (!response.ok && response.status !== 206) {
-          throw new Error(`下载媒体失败（HTTP ${response.status}）。`);
+          throw new Error((isChinese ? `下载媒体失败（HTTP ${response.status}）。` : `Media download failed (HTTP ${response.status}).`));
         }
 
         const bytes = new Uint8Array(await response.arrayBuffer());
         await waitForDownloadTask(task);
-        if (!bytes.length) throw new Error('下载返回了空数据。');
+        if (!bytes.length) throw new Error((isChinese ? '下载返回了空数据。' : "The download returned empty data."));
 
         if (response.status === 200) {
-          if (position !== 0) throw new Error('媒体服务器未支持断点续传，无法继续暂停后的下载。');
+          if (position !== 0) throw new Error((isChinese ? '媒体服务器未支持断点续传，无法继续暂停后的下载。' : "The media server does not support range requests; the paused download cannot resume."));
           total = bytes.length;
           await writer.write(bytes);
           position = bytes.length;
@@ -2498,7 +2499,7 @@ import {
         }
 
         if (contentRange?.start != null && contentRange.start !== position) {
-          throw new Error(`媒体分片起点异常：期望 ${position}，实际 ${contentRange.start}。`);
+          throw new Error((isChinese ? `媒体分片起点异常：期望 ${position}，实际 ${contentRange.start}。` : `Unexpected media range start: expected ${position}, received ${contentRange.start}.`));
         }
         if (contentRange?.total != null) total = contentRange.total;
         await writer.write({ type: 'write', position, data: bytes });
@@ -2524,13 +2525,13 @@ import {
       const fail = (error) => {
         const code = error?.error || 'not_succeeded';
         const hints = {
-          not_enabled: 'Tampermonkey 下载功能未启用',
-          not_whitelisted: '文件扩展名未列入 Tampermonkey 下载白名单',
-          not_permitted: 'Tampermonkey 没有浏览器下载权限',
-          not_supported: '当前浏览器或下载模式不支持 GM_download',
-          not_succeeded: '下载没有成功启动或已失败'
+          not_enabled: (isChinese ? 'Tampermonkey 下载功能未启用' : "Tampermonkey downloads are disabled"),
+          not_whitelisted: (isChinese ? '文件扩展名未列入 Tampermonkey 下载白名单' : "The file extension is not allowed in Tampermonkey download settings"),
+          not_permitted: (isChinese ? 'Tampermonkey 没有浏览器下载权限' : "Tampermonkey lacks browser download permission"),
+          not_supported: (isChinese ? '当前浏览器或下载模式不支持 GM_download' : "This browser or download mode does not support GM_download"),
+          not_succeeded: (isChinese ? '下载没有成功启动或已失败' : "The download failed to start or failed during transfer")
         };
-        reject(new Error(`直接下载失败：${hints[code] || code}${error?.details ? `；${error.details}` : ''}`));
+        reject(new Error((isChinese ? `直接下载失败：${hints[code] || code}${error?.details ? (isChinese ? `；${error.details}` : `; ${error.details}`) : ''}` : `Direct download failed: ${hints[code] || code}${error?.details ? (isChinese ? `；${error.details}` : `; ${error.details}`) : ''}`)));
       };
 
       try {
@@ -2554,7 +2555,7 @@ import {
           },
           onerror: fail,
           ontimeout(error) {
-            fail({ error: 'not_succeeded', details: error?.details || '下载超时' });
+            fail({ error: 'not_succeeded', details: error?.details || (isChinese ? '下载超时' : "Download timed out") });
           }
         });
         if (task) task.cancel = () => download?.abort?.();
@@ -2826,7 +2827,7 @@ import {
 
     const head = document.createElement('div');
     head.className = 'ytx-head';
-    head.title = '按住标题栏拖动下载框';
+    head.title = (isChinese ? '按住标题栏拖动下载框' : "Drag the title bar to move this panel");
 
     const titleElement = document.createElement('div');
     titleElement.className = 'ytx-title';
@@ -2835,12 +2836,12 @@ import {
     const refreshButton = document.createElement('button');
     refreshButton.type = 'button';
     refreshButton.dataset.role = 'refresh';
-    refreshButton.textContent = '刷新';
+    refreshButton.textContent = (isChinese ? '刷新' : "Refresh");
 
     const closeButton = document.createElement('button');
     closeButton.type = 'button';
     closeButton.dataset.role = 'close';
-    closeButton.textContent = '关闭';
+    closeButton.textContent = (isChinese ? '关闭' : "Close");
 
     const body = document.createElement('div');
     body.dataset.role = 'body';
@@ -2852,7 +2853,7 @@ import {
 
     const security = document.createElement('div');
     security.className = 'ytx-security';
-    security.textContent = '运行时网络白名单：YouTube / googlevideo.com / video.twimg.com；无第三方解析站、广告、统计、返利链接。';
+    security.textContent = (isChinese ? '运行时网络白名单：YouTube / googlevideo.com / video.twimg.com；无第三方解析站、广告、统计、返利链接。' : "Runtime network allowlist: YouTube / googlevideo.com / video.twimg.com. No third-party parsing services, ads, analytics, or affiliate links.");
 
     head.append(titleElement, refreshButton, closeButton);
     p.append(head, body, tasks, security);
@@ -2906,11 +2907,11 @@ import {
     if (!body) return;
 
     if (!id) {
-      setBodyMessage(body, 'ytx-tip', '请先打开 YouTube 视频/Shorts 页面。');
+      setBodyMessage(body, 'ytx-tip', (isChinese ? '请先打开 YouTube 视频/Shorts 页面。' : "Open a YouTube video or Shorts page first."));
       return;
     }
 
-    setBodyMessage(body, 'ytx-loading', '正在读取 YouTube 媒体信息……');
+    setBodyMessage(body, 'ytx-loading', (isChinese ? '正在读取 YouTube 媒体信息……' : "Loading YouTube media information..."));
     setStatus('');
 
     try {
@@ -2926,14 +2927,14 @@ import {
       body.replaceChildren();
       const tip = document.createElement('div');
       tip.className = 'ytx-tip';
-      tip.textContent = `InnerTube client: ${client}；播放器请求捕获${state.youtubeNetworkCaptureInstalled ? '已启用' : '不可用'}${observedCount ? `；观察到 ${observedCount} 条媒体轨，新增 ${capturedCount} 条` : ''}${sabrPairs.length ? `；SABR 本地轨道 ${sabrPairs.length} 条` : ''}。1080p 以上通常是独立视频轨，点击后会自动选择同容器的最高质量音频并在浏览器内无损合并。`;
+      tip.textContent = (isChinese ? `InnerTube client: ${client}；播放器请求捕获${state.youtubeNetworkCaptureInstalled ? (isChinese ? '已启用' : "enabled") : (isChinese ? '不可用' : "unavailable")}${observedCount ? (isChinese ? `；观察到 ${observedCount} 条媒体轨，新增 ${capturedCount} 条` : `; observed ${observedCount} media tracks, added ${capturedCount} tracks`) : ''}${sabrPairs.length ? (isChinese ? `；SABR 本地轨道 ${sabrPairs.length} 条` : `; local SABR tracks: ${sabrPairs.length} tracks`) : ''}。1080p 以上通常是独立视频轨，点击后会自动选择同容器的最高质量音频并在浏览器内无损合并。` : `InnerTube client: ${client}; player request capture: ${state.youtubeNetworkCaptureInstalled ? (isChinese ? '已启用' : "enabled") : (isChinese ? '不可用' : "unavailable")}${observedCount ? (isChinese ? `；观察到 ${observedCount} 条媒体轨，新增 ${capturedCount} 条` : `; observed ${observedCount} media tracks, added ${capturedCount} tracks`) : ''}${sabrPairs.length ? (isChinese ? `；SABR 本地轨道 ${sabrPairs.length} 条` : `; local SABR tracks: ${sabrPairs.length} tracks`) : ''}. Resolutions above 1080p usually use separate video tracks. Clicking selects the highest-quality compatible audio and merges it losslessly in your browser.`);
       body.appendChild(tip);
 
       if (!formats.length && !sabrPairs.length) {
         body.appendChild(document.createTextNode(
           hasYoutubeSabrStreaming(info)
-            ? 'YouTube 当前只返回 SABR/分段流，没有可直接解码的媒体 URL；当前版本不会把它伪装成可下载项。'
-            : '没有找到可用视频格式。'
+            ? (isChinese ? 'YouTube 当前只返回 SABR/分段流，没有可直接解码的媒体 URL；当前版本不会把它伪装成可下载项。' : "YouTube returned only SABR/segmented streams with no directly decipherable media URL. These cannot be listed as downloadable formats in this version.")
+            : (isChinese ? '没有找到可用视频格式。' : "No available video formats found.")
         ));
         return;
       }
@@ -2946,7 +2947,7 @@ import {
       if (highestHeight <= 360) {
         const captureHint = document.createElement('div');
         captureHint.className = 'ytx-tip';
-        captureHint.textContent = `仍只有 360p：请先在 YouTube 播放器中手动选择 4K/最高画质并播放 3～5 秒，再点击“刷新”；脚本会捕获实际 googlevideo 视频轨和音频轨。${capturedSummary ? ` 当前观察：${capturedSummary}` : ' 当前没有观察到可识别的 videoplayback itag。'}`;
+        captureHint.textContent = (isChinese ? `仍只有 360p：请先在 YouTube 播放器中手动选择 4K/最高画质并播放 3～5 秒，再点击“刷新”；脚本会捕获实际 googlevideo 视频轨和音频轨。${capturedSummary ? (isChinese ? ` 当前观察：${capturedSummary}` : ` Currently observed: ${capturedSummary}`) : (isChinese ? ' 当前没有观察到可识别的 videoplayback itag。' : " No recognizable videoplayback itag observed yet.")}` : `Only 360p available: select 4K or the highest quality in the YouTube player, play for 3–5 seconds, then click Refresh. The script will capture the actual googlevideo video and audio tracks.${capturedSummary ? (isChinese ? ` 当前观察：${capturedSummary}` : ` Currently observed: ${capturedSummary}`) : (isChinese ? ' 当前没有观察到可识别的 videoplayback itag。' : " No recognizable videoplayback itag observed yet.")}`);
         body.appendChild(captureHint);
       }
 
@@ -2959,8 +2960,8 @@ import {
         const fps = rawVideo.fps ? `${rawVideo.fps}fps` : '';
         const size = formatBytes(pair.video.contentLength);
         const codec = codecLabel(rawVideo.mime_type);
-        const primary = [quality, fps, container.toUpperCase(), 'SABR 本地合并'].filter(Boolean).join(' · ');
-        const secondary = `${codec} · ${size} · itag ${pair.video.itag} · YouTube Server ABR，浏览器内合并音频`;
+        const primary = [quality, fps, container.toUpperCase(), (isChinese ? 'SABR 本地合并' : "SABR local merge")].filter(Boolean).join(' · ');
+        const secondary = (isChinese ? `${codec} · ${size} · itag ${pair.video.itag} · YouTube Server ABR，浏览器内合并音频` : `${codec} · ${size} · itag ${pair.video.itag} · YouTube Server ABR, audio merged locally in your browser`);
 
         const row = createFormatRow(primary, secondary, async () => {
           try {
@@ -2969,15 +2970,15 @@ import {
               container
             );
             enqueueDownload(`${title} [${quality}${fps ? ` ${fps}` : ''}].${container}`, async (task) => {
-              setDownloadTaskProgress(task, `正在通过 YouTube SABR 拉取 ${quality} 视频和音频……`);
+              setDownloadTaskProgress(task, (isChinese ? `正在通过 YouTube SABR 拉取 ${quality} 视频和音频……` : `Fetching via YouTube SABR: ${quality} video and audio...`));
               await remuxYoutubeSabrFormat(sabrInfo, pair, fileHandle, ({ bytes, ratio }) => {
                 if (ratio == null) {
-                  setDownloadTaskProgress(task, `正在浏览器内合并 SABR 流……\n已写入 ${formatBytes(bytes)}`);
+                  setDownloadTaskProgress(task, (isChinese ? `正在浏览器内合并 SABR 流……\n已写入 ${formatBytes(bytes)}` : `Merging SABR streams locally...\nWritten: ${formatBytes(bytes)}`));
                 } else {
-                  setDownloadTaskProgress(task, `正在浏览器内合并 SABR 流……\n${(ratio * 100).toFixed(1)}% · 已写入 ${formatBytes(bytes)}`);
+                  setDownloadTaskProgress(task, (isChinese ? `正在浏览器内合并 SABR 流……\n${(ratio * 100).toFixed(1)}% · 已写入 ${formatBytes(bytes)}` : `Merging SABR streams locally...\n${(ratio * 100).toFixed(1)}% · Written: ${formatBytes(bytes)}`));
                 }
               }, task);
-              setDownloadTaskProgress(task, '完成：SABR 视频和音频已经在浏览器内无损合并并写入文件。');
+              setDownloadTaskProgress(task, (isChinese ? '完成：SABR 视频和音频已经在浏览器内无损合并并写入文件。' : "Complete: SABR video and audio merged losslessly and saved."));
             });
           } catch (error) {
             if (error?.name !== 'AbortError') showError(error);
@@ -3011,7 +3012,7 @@ import {
       if (!preparedFormats.length && !sabrOnlyPairs.length) {
         body.appendChild(document.createTextNode(
           rejectedFormatError?.message ||
-          'YouTube 返回的格式无法解码，可能是 SABR/分段流；没有打开保存对话框。'
+          (isChinese ? 'YouTube 返回的格式无法解码，可能是 SABR/分段流；没有打开保存对话框。' : "The YouTube format cannot be deciphered and may use SABR/segmented streaming. The save dialog was not opened.")
         ));
         return;
       }
@@ -3025,8 +3026,8 @@ import {
         const fps = format.fps ? `${format.fps}fps` : '';
         const size = formatBytes(format.content_length);
         const codec = codecLabel(format.mime_type);
-        const mode = hasSeparateAudio ? `浏览器内合并 + ${codecLabel(audio.mime_type)}` : '自带音频，直接下载';
-        const flags = [format.ytx_captured ? '播放器捕获' : '', format.is_sr ? 'SR' : '', format.is_drc ? 'DRC' : ''].filter(Boolean).join(' ');
+        const mode = hasSeparateAudio ? (isChinese ? `浏览器内合并 + ${codecLabel(audio.mime_type)}` : `Local merge + ${codecLabel(audio.mime_type)}`) : (isChinese ? '自带音频，直接下载' : "Includes audio, direct download");
+        const flags = [format.ytx_captured ? (isChinese ? '播放器捕获' : "Captured from player") : '', format.is_sr ? 'SR' : '', format.is_drc ? 'DRC' : ''].filter(Boolean).join(' ');
         const primary = [quality, fps, container.toUpperCase(), flags].filter(Boolean).join(' · ');
         const secondary = `${codec} · ${size} · itag ${format.itag} · ${mode}`;
 
@@ -3041,15 +3042,15 @@ import {
                 extension
               );
               enqueueDownload(`${title} [${quality}${fps ? ` ${fps}` : ''}].${extension}`, async (task) => {
-                setDownloadTaskProgress(task, '正在解析 YouTube 签名并准备媒体流……');
+                setDownloadTaskProgress(task, (isChinese ? '正在解析 YouTube 签名并准备媒体流……' : "Deciphering YouTube signatures and preparing streams..."));
                 await remuxYoutubeFormat(info, format, audio, fileHandle, ({ bytes, ratio }) => {
                   if (ratio == null) {
-                    setDownloadTaskProgress(task, `正在浏览器内无损合并……\n已写入 ${formatBytes(bytes)}`);
+                    setDownloadTaskProgress(task, (isChinese ? `正在浏览器内无损合并……\n已写入 ${formatBytes(bytes)}` : `Merging losslessly in your browser...\nWritten: ${formatBytes(bytes)}`));
                   } else {
-                    setDownloadTaskProgress(task, `正在浏览器内无损合并……\n${(ratio * 100).toFixed(1)}% · 已写入 ${formatBytes(bytes)}`);
+                    setDownloadTaskProgress(task, (isChinese ? `正在浏览器内无损合并……\n${(ratio * 100).toFixed(1)}% · 已写入 ${formatBytes(bytes)}` : `Merging losslessly in your browser...\n${(ratio * 100).toFixed(1)}% · Written: ${formatBytes(bytes)}`));
                   }
                 }, task);
-                setDownloadTaskProgress(task, '完成：视频和音频已经在浏览器内无损合并并写入文件。');
+                setDownloadTaskProgress(task, (isChinese ? '完成：视频和音频已经在浏览器内无损合并并写入文件。' : "Complete: video and audio merged losslessly and saved."));
               });
             } else {
               const name = `${title} [${quality}].${container}`;
@@ -3060,22 +3061,22 @@ import {
               enqueueDownload(name, async (task) => {
                 const url = await decipherYoutubeFormat(info, format);
                 if (fileHandle) {
-                  setDownloadTaskProgress(task, '正在下载 YouTube 媒体……');
+                  setDownloadTaskProgress(task, (isChinese ? '正在下载 YouTube 媒体……' : "Downloading YouTube media..."));
                   await downloadRemoteToFile(url, fileHandle, task, Number(format.content_length || 0), ({ loaded, total, ratio }) => {
                     setDownloadTaskProgress(task, ratio == null
-                      ? `正在下载 YouTube 媒体……\n已接收 ${formatBytes(loaded)}`
-                      : `正在下载 YouTube 媒体……\n${(ratio * 100).toFixed(1)}% · ${formatBytes(loaded)} / ${formatBytes(total)}`);
+                      ? (isChinese ? `正在下载 YouTube 媒体……\n已接收 ${formatBytes(loaded)}` : `Downloading YouTube media...\nReceived: ${formatBytes(loaded)}`)
+                      : (isChinese ? `正在下载 YouTube 媒体……\n${(ratio * 100).toFixed(1)}% · ${formatBytes(loaded)} / ${formatBytes(total)}` : `Downloading YouTube media...\n${(ratio * 100).toFixed(1)}% · ${formatBytes(loaded)} / ${formatBytes(total)}`));
                   });
                 } else {
                   task.pauseSupported = false;
-                  setDownloadTaskProgress(task, '正在通过 Tampermonkey 下载……');
+                  setDownloadTaskProgress(task, (isChinese ? '正在通过 Tampermonkey 下载……' : "Downloading via Tampermonkey..."));
                   await directDownload(url, name, ({ loaded, ratio }) => {
                     setDownloadTaskProgress(task, ratio == null
-                      ? `Tampermonkey 正在下载……\n已接收 ${formatBytes(loaded)}`
-                      : `Tampermonkey 正在下载……\n${(ratio * 100).toFixed(1)}% · 已接收 ${formatBytes(loaded)}`);
+                      ? (isChinese ? `Tampermonkey 正在下载……\n已接收 ${formatBytes(loaded)}` : `Tampermonkey is downloading...\nReceived: ${formatBytes(loaded)}`)
+                      : (isChinese ? `Tampermonkey 正在下载……\n${(ratio * 100).toFixed(1)}% · 已接收 ${formatBytes(loaded)}` : `Tampermonkey is downloading...\n${(ratio * 100).toFixed(1)}% · Received: ${formatBytes(loaded)}`));
                   }, task);
                 }
-                setDownloadTaskProgress(task, '下载完成：文件已保存到本机。');
+                setDownloadTaskProgress(task, (isChinese ? '下载完成：文件已保存到本机。' : "Download complete: file saved locally."));
               });
             }
           } catch (error) {
@@ -3095,12 +3096,12 @@ import {
     const body = panelBody();
     if (!body) return;
 
-    setBodyMessage(body, 'ytx-loading', '正在检查当前页面已经加载的 X 视频资源……');
+    setBodyMessage(body, 'ytx-loading', (isChinese ? '正在检查当前页面已经加载的 X 视频资源……' : "Checking X video resources loaded on this page..."));
     setStatus('');
 
     const media = getXMediaForContext(context);
     if (!media.length) {
-      setBodyMessage(body, 'ytx-tip', '还没有检测到与当前点击视频对应的 video.twimg.com 媒体。请先播放这条视频 1～2 秒，再点“刷新”；脚本不会改用页面中其他视频的资源。');
+      setBodyMessage(body, 'ytx-tip', (isChinese ? '还没有检测到与当前点击视频对应的 video.twimg.com 媒体。请先播放这条视频 1～2 秒，再点“刷新”；脚本不会改用页面中其他视频的资源。' : "No video.twimg.com media detected for the selected video yet. Play this video for 1–2 seconds, then click Refresh. Other videos on the page will not be used."));
       return;
     }
 
@@ -3108,8 +3109,8 @@ import {
     const tip = document.createElement('div');
     tip.className = 'ytx-tip';
     tip.textContent = context
-      ? '只显示与当前点击视频对应的可用资源。初始化片段、单独音频、无视频轨的 HLS 清单和播放器临时请求会自动隐藏。'
-      : '只显示可用的视频源。初始化片段、单独音频、无视频轨的 HLS 清单和播放器临时请求会自动隐藏。';
+      ? (isChinese ? '只显示与当前点击视频对应的可用资源。初始化片段、单独音频、无视频轨的 HLS 清单和播放器临时请求会自动隐藏。' : "Only available sources for the selected video are shown. Initialization segments, audio-only sources, HLS playlists without video, and temporary player requests are hidden.")
+      : (isChinese ? '只显示可用的视频源。初始化片段、单独音频、无视频轨的 HLS 清单和播放器临时请求会自动隐藏。' : "Only available video sources are shown. Initialization segments, audio-only sources, HLS playlists without video, and temporary player requests are hidden.");
     body.appendChild(tip);
 
     const latest = media.slice(0, 12);
@@ -3118,15 +3119,15 @@ import {
     for (const [itemIndex, item] of latest.entries()) {
       if (item.type === 'mp4') {
         const label = item.url.match(/\/(\d+)x(\d+)\//)?.slice(1).join('×') || 'MP4';
-        const placeholder = createFormatRow(`X · ${label} · MP4（分析中…）`, '正在确认是否为完整 MP4、DASH/fMP4 或视频分片。', () => {});
+        const placeholder = createFormatRow((isChinese ? `X · ${label} · MP4（分析中…）` : `X · ${label} · MP4 (analyzing...)`), (isChinese ? '正在确认是否为完整 MP4、DASH/fMP4 或视频分片。' : "Checking whether this is a complete MP4, DASH/fMP4, or a media segment."), () => {});
         body.appendChild(placeholder);
 
         try {
           const analysis = await analyzeXMp4(item.url, mp4Urls);
-          const primary = `X · ${analysis.width || '?'}×${analysis.height || '?'} · ${analysis.mode === 'direct' ? 'MP4' : '本地封装'}`;
+          const primary = `X · ${analysis.width || '?'}×${analysis.height || '?'} · ${analysis.mode === 'direct' ? 'MP4' : (isChinese ? '本地封装' : "Local remux")}`;
 
           if (analysis.mode === 'direct') {
-            const row = createFormatRow(primary, `${analysis.videoCodec || '视频'} + ${analysis.audioCodec || '音频'} · 已确认是完整 MP4，直接下载`, async () => {
+            const row = createFormatRow(primary, (isChinese ? `${analysis.videoCodec || (isChinese ? '视频' : "Video")} + ${analysis.audioCodec || (isChinese ? '音频' : "Audio")} · 已确认是完整 MP4，直接下载` : `${analysis.videoCodec || (isChinese ? '视频' : "Video")} + ${analysis.audioCodec || (isChinese ? '音频' : "Audio")} · Complete MP4 verified, direct download`), async () => {
               try {
                 const downloadName = getXDownloadName(item, analysis, 'mp4', itemIndex, context);
                 let fileHandle = null;
@@ -3135,22 +3136,22 @@ import {
                 }
                 enqueueDownload(downloadName, async (task) => {
                   if (fileHandle) {
-                    setDownloadTaskProgress(task, `正在下载 ${downloadName}…`);
+                    setDownloadTaskProgress(task, (isChinese ? `正在下载 ${downloadName}…` : `Downloading ${downloadName}...`));
                     await downloadRemoteToFile(item.url, fileHandle, task, Number(analysis.totalBytes || 0), ({ loaded, total, ratio }) => {
                       setDownloadTaskProgress(task, ratio == null
-                        ? `正在下载 ${downloadName}…\n已接收 ${formatBytes(loaded)}`
-                        : `正在下载 ${downloadName}…\n${(ratio * 100).toFixed(1)}% · ${formatBytes(loaded)} / ${formatBytes(total)}`);
+                        ? (isChinese ? `正在下载 ${downloadName}…\n已接收 ${formatBytes(loaded)}` : `Downloading ${downloadName}...\nReceived: ${formatBytes(loaded)}`)
+                        : (isChinese ? `正在下载 ${downloadName}…\n${(ratio * 100).toFixed(1)}% · ${formatBytes(loaded)} / ${formatBytes(total)}` : `Downloading ${downloadName}...\n${(ratio * 100).toFixed(1)}% · ${formatBytes(loaded)} / ${formatBytes(total)}`));
                     });
                   } else {
                     task.pauseSupported = false;
-                    setDownloadTaskProgress(task, `正在通过 Tampermonkey 下载 ${downloadName}…`);
+                    setDownloadTaskProgress(task, (isChinese ? `正在通过 Tampermonkey 下载 ${downloadName}…` : `Downloading via Tampermonkey: ${downloadName}...`));
                     await directDownload(item.url, downloadName, ({ loaded, ratio }) => {
                       setDownloadTaskProgress(task, ratio == null
-                        ? `Tampermonkey 正在下载…\n已接收 ${formatBytes(loaded)}`
-                        : `Tampermonkey 正在下载……\n${(ratio * 100).toFixed(1)}% · 已接收 ${formatBytes(loaded)}`);
+                        ? (isChinese ? `Tampermonkey 正在下载…\n已接收 ${formatBytes(loaded)}` : `Tampermonkey is downloading...\nReceived: ${formatBytes(loaded)}`)
+                        : (isChinese ? `Tampermonkey 正在下载……\n${(ratio * 100).toFixed(1)}% · 已接收 ${formatBytes(loaded)}` : `Tampermonkey is downloading...\n${(ratio * 100).toFixed(1)}% · Received: ${formatBytes(loaded)}`));
                     }, task);
                   }
-                  setDownloadTaskProgress(task, `下载完成：${downloadName}`);
+                  setDownloadTaskProgress(task, (isChinese ? `下载完成：${downloadName}` : `Download complete: ${downloadName}`));
                 });
               } catch (error) {
                 if (error?.name !== 'AbortError') showError(error);
@@ -3162,16 +3163,16 @@ import {
 
           const reason = [
             analysis.fragmented ? 'DASH/fMP4' : '',
-            analysis.paired ? '视频/音频跨资源配对' : ''
+            analysis.paired ? (isChinese ? '视频/音频跨资源配对' : "Video/audio paired across sources") : ''
           ].filter(Boolean).join(' + ');
           const primaryText = `${primary}${reason ? ` · ${reason}` : ''}`;
-          const secondary = `${analysis.videoCodec || '视频'} + ${analysis.audioCodec || '音频'} · 浏览器内无损封装`;
+          const secondary = (isChinese ? `${analysis.videoCodec || (isChinese ? '视频' : "Video")} + ${analysis.audioCodec || (isChinese ? '音频' : "Audio")} · 浏览器内无损封装` : `${analysis.videoCodec || (isChinese ? '视频' : "Video")} + ${analysis.audioCodec || (isChinese ? '音频' : "Audio")} · Lossless local remux`);
           placeholder.replaceWith(createFormatRow(primaryText, secondary, async () => {
             try {
               const downloadName = getXDownloadName(item, analysis, 'mp4', itemIndex, context);
               const fileHandle = await pickSaveFile(downloadName, 'mp4');
               enqueueDownload(downloadName, async (task) => {
-                setDownloadTaskProgress(task, `正在读取 X ${reason || 'MP4'} 并在浏览器内无损封装……`);
+                setDownloadTaskProgress(task, (isChinese ? `正在读取 X ${reason || 'MP4'} 并在浏览器内无损封装……` : `Reading X ${reason || 'MP4'} and remuxing losslessly in your browser...`));
                 await remuxTracksToFile({
                   videoTrack: analysis.videoTrack,
                   audioTrack: analysis.audioTrack,
@@ -3180,11 +3181,11 @@ import {
                   preferredKind: 'mp4',
                   expectedBytes: 0,
                   onProgress: ({ bytes }) => {
-                    setDownloadTaskProgress(task, `正在读取 X ${reason || 'MP4'} 并封装……\n已写入 ${formatBytes(bytes)}`);
+                    setDownloadTaskProgress(task, (isChinese ? `正在读取 X ${reason || 'MP4'} 并封装……\n已写入 ${formatBytes(bytes)}` : `Reading X ${reason || 'MP4'} and remuxing...\nWritten: ${formatBytes(bytes)}`));
                   },
                   task
                 });
-                setDownloadTaskProgress(task, '完成：X 视频和音频已在浏览器内封装为可播放文件。');
+                setDownloadTaskProgress(task, (isChinese ? '完成：X 视频和音频已在浏览器内封装为可播放文件。' : "Complete: X video and audio remuxed into a playable file."));
               }, { cleanup: () => analysis.inputs.forEach((input) => input.dispose()) });
             } catch (error) {
               if (error?.name !== 'AbortError') showError(error);
@@ -3201,13 +3202,13 @@ import {
       // HLS analysis is intentionally performed while rendering, not on the
       // download click. This lets the actual click immediately open the native
       // save picker (required by browser user-activation rules).
-      const placeholder = createFormatRow('X · HLS（分析中…）', item.url, () => {});
+      const placeholder = createFormatRow((isChinese ? 'X · HLS（分析中…）' : "X · HLS (analyzing...)"), item.url, () => {});
       body.appendChild(placeholder);
 
       try {
         const analysis = await analyzeXHls(item.url);
         const primary = `X · ${analysis.width || '?'}×${analysis.height || '?'} · ${analysis.extension.toUpperCase()}`;
-        const secondary = `${analysis.videoCodec} + ${analysis.audioCodec} · 浏览器内无损封装`;
+        const secondary = (isChinese ? `${analysis.videoCodec} + ${analysis.audioCodec} · 浏览器内无损封装` : `${analysis.videoCodec} + ${analysis.audioCodec} · Lossless local remux`);
         placeholder.querySelector('.ytx-primary').textContent = primary;
         placeholder.querySelector('.ytx-secondary').textContent = secondary;
 
@@ -3217,7 +3218,7 @@ import {
             const downloadName = getXDownloadName(item, analysis, analysis.extension, itemIndex, context);
             const fileHandle = await pickSaveFile(downloadName, analysis.extension);
             enqueueDownload(downloadName, async (task) => {
-              setDownloadTaskProgress(task, '正在读取 X HLS 分片并在浏览器内无损封装……');
+              setDownloadTaskProgress(task, (isChinese ? '正在读取 X HLS 分片并在浏览器内无损封装……' : "Reading X HLS segments and remuxing losslessly in your browser..."));
               await remuxTracksToFile({
                 videoTrack: analysis.videoTrack,
                 audioTrack: analysis.audioTrack,
@@ -3226,11 +3227,11 @@ import {
                 preferredKind: analysis.extension,
                 expectedBytes: 0,
                 onProgress: ({ bytes }) => {
-                  setDownloadTaskProgress(task, `正在读取 X HLS 并封装……\n已写入 ${formatBytes(bytes)}`);
+                  setDownloadTaskProgress(task, (isChinese ? `正在读取 X HLS 并封装……\n已写入 ${formatBytes(bytes)}` : `Reading and remuxing X HLS...\nWritten: ${formatBytes(bytes)}`));
                 },
                 task
               });
-              setDownloadTaskProgress(task, '完成：X 视频已写入本地文件。');
+              setDownloadTaskProgress(task, (isChinese ? '完成：X 视频已写入本地文件。' : "Complete: X video saved locally."));
             }, { cleanup: () => analysis.input.dispose() });
           } catch (error) {
             if (error?.name !== 'AbortError') showError(error);
@@ -3244,12 +3245,12 @@ import {
     }
 
     if (hiddenCount) {
-      tip.textContent = `只显示可用的视频源；已自动隐藏 ${hiddenCount} 个初始化片段、单独音频或不可解析的播放器请求。`;
+      tip.textContent = (isChinese ? `只显示可用的视频源；已自动隐藏 ${hiddenCount} 个初始化片段、单独音频或不可解析的播放器请求。` : `Only available video sources are shown; hidden ${hiddenCount} initialization segments, audio-only sources, or unparseable player requests.`);
     }
     if (!body.querySelector('.ytx-format')) {
       const empty = document.createElement('div');
       empty.className = 'ytx-tip';
-      empty.textContent = '当前没有找到可独立读取的视频源。请确认视频已播放，然后点击“刷新”；播放器产生的无效分片不会显示。';
+      empty.textContent = (isChinese ? '当前没有找到可独立读取的视频源。请确认视频已播放，然后点击“刷新”；播放器产生的无效分片不会显示。' : "No independently readable video source found. Play the video, then click Refresh. Invalid player segments are hidden.");
       body.appendChild(empty);
     }
   }
@@ -3268,7 +3269,7 @@ import {
     }
 
     removePanel();
-    makePanelShell(isYoutubeHost() ? 'YouTube 直接下载' : 'X 直接下载', anchor, xContext);
+    makePanelShell(isYoutubeHost() ? (isChinese ? 'YouTube 直接下载' : "YouTube Direct Download") : (isChinese ? 'X 直接下载' : "X Direct Download"), anchor, xContext);
     void refreshPanel(false).catch((error) => showError(error));
   }
 
@@ -3349,7 +3350,7 @@ import {
       .forEach((button) => button.remove());
     if (existing) return;
 
-    const button = createContextButton('↓ 高清下载', '在当前 YouTube 视频下方打开下载选项', 'ytx-youtube-button', 'youtube');
+    const button = createContextButton((isChinese ? '↓ 高清下载' : "↓ HD Download"), (isChinese ? '在当前 YouTube 视频下方打开下载选项' : "Open download options for this YouTube video"), 'ytx-youtube-button', 'youtube');
     mount.appendChild(button);
   }
 
@@ -3443,7 +3444,7 @@ import {
       const slot = document.createElement('div');
       slot.className = 'ytx-x-download-slot';
       slot.dataset.ytxVideoDownload = 'true';
-      const button = createContextButton('↓ 视频下载', '在这条 X 视频下方打开下载选项', 'ytx-x-button', 'x');
+      const button = createContextButton((isChinese ? '↓ 视频下载' : "↓ Download Video"), (isChinese ? '在这条 X 视频下方打开下载选项' : "Open download options for this X video"), 'ytx-x-button', 'x');
       slot.appendChild(button);
       updateXButtonContext(button, player, article);
 

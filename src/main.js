@@ -2122,6 +2122,8 @@ import {
       : YOUTUBE_CLIENT_NAME_IDS[client.clientName] || YOUTUBE_CLIENT_NAME_IDS.WEB;
     const screenWidth = Number(window.screen?.width || window.innerWidth || 0) || undefined;
     const screenHeight = Number(window.screen?.height || window.innerHeight || 0) || undefined;
+    const pixelRatio = Number(window.devicePixelRatio);
+    const validPixelRatio = Number.isFinite(pixelRatio) && pixelRatio > 0 && pixelRatio <= 2147483647;
 
     return {
       clientName,
@@ -2134,8 +2136,10 @@ import {
       screenHeightPoints: screenHeight,
       windowWidthPoints: Number(window.innerWidth || 0) || undefined,
       windowHeightPoints: Number(window.innerHeight || 0) || undefined,
-      screenPixelDensity: Number(window.devicePixelRatio || 0) || undefined,
-      screenDensityFloat: Number(window.devicePixelRatio || 0) || undefined,
+      // SABR uses int32 for the legacy density and float for the exact ratio.
+      // Fractional display/browser scaling (e.g. 1.5) must not reach int32.
+      screenPixelDensity: validPixelRatio ? Math.max(1, Math.round(pixelRatio)) : undefined,
+      screenDensityFloat: validPixelRatio ? pixelRatio : undefined,
       utcOffsetMinutes: String(-new Date().getTimezoneOffset()),
       timeZone: Intl.DateTimeFormat().resolvedOptions().timeZone || ''
     };

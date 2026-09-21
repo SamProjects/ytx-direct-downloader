@@ -2622,7 +2622,7 @@ import {
       .${BUTTON_CLASS}.ytx-youtube-shorts-button {
         flex-direction: column !important; gap: 4px !important; width: 72px !important;
         min-height: 68px !important; padding: 0 !important; border-radius: 0 !important;
-        background: transparent !important; color: var(--yt-spec-text-primary, #fff) !important;
+        background: transparent !important; color: #0f0f0f !important;
         font: 500 12px/1.2 Roboto,Arial,sans-serif !important;
         pointer-events: auto !important;
       }
@@ -2630,7 +2630,7 @@ import {
       .${BUTTON_CLASS}.ytx-youtube-shorts-button .ytx-shorts-download-icon {
         display: inline-flex !important; align-items: center !important; justify-content: center !important;
         width: 48px !important; height: 48px !important; padding: 0 !important; border-radius: 50% !important;
-        background: var(--yt-spec-badge-chip-background, rgba(0,0,0,.6)) !important;
+        background: #f2f2f2 !important;
         color: inherit !important;
       }
       .${BUTTON_CLASS}.ytx-youtube-shorts-button .ytx-shorts-download-icon svg {
@@ -2648,7 +2648,14 @@ import {
         font-size: 9px !important;
       }
       .${BUTTON_CLASS}.ytx-youtube-shorts-button:hover .ytx-shorts-download-icon {
-        background: var(--yt-spec-10-percent-layer, rgba(255,255,255,.2)) !important;
+        background: #e5e5e5 !important;
+      }
+      html[dark] .${BUTTON_CLASS}.ytx-youtube-shorts-button { color: #fff !important; }
+      html[dark] .${BUTTON_CLASS}.ytx-youtube-shorts-button .ytx-shorts-download-icon {
+        background: #272727 !important;
+      }
+      html[dark] .${BUTTON_CLASS}.ytx-youtube-shorts-button:hover .ytx-shorts-download-icon {
+        background: #3f3f3f !important;
       }
       .${BUTTON_CLASS}.ytx-x-button {
         min-height: 34px !important; border-radius: 17px !important;
@@ -3460,14 +3467,17 @@ import {
   }
 
   function findActiveYoutubeShortsMount() {
-    const directCandidates = document.querySelectorAll([
+    const directCandidates = [...document.querySelectorAll([
       'ytd-reel-video-renderer reel-action-bar-view-model',
       'ytd-reel-video-renderer #actions',
       'ytd-reel-video-renderer [class*="ReelActionBar"]',
       'ytd-shorts reel-action-bar-view-model',
       'ytd-shorts #actions',
       'ytd-shorts [class*="ReelActionBar"]'
-    ].join(','));
+    ].join(','))].filter((element) => {
+      const rect = element.getBoundingClientRect();
+      return rect.width > 0 && rect.width <= 180 && rect.height >= 120;
+    });
     const direct = pickVisibleYoutubeShortsMount(directCandidates);
     if (direct) return direct;
 
@@ -3499,6 +3509,7 @@ import {
   function createYoutubeShortsButton(videoId) {
     const title = isChinese ? '下载当前 YouTube Shorts 视频' : 'Download this YouTube Short';
     const button = createContextButton('', title, 'ytx-youtube-button ytx-youtube-shorts-button', 'youtube');
+    button.removeAttribute('title');
     button.dataset.ytxYoutubeVideoId = videoId;
 
     const icon = document.createElement('span');
@@ -3521,18 +3532,16 @@ import {
   }
 
   function positionYoutubeShortsSlot(slot, mount) {
-    const trailingAudioButton = [...mount.children].find((child) => (
-      child.matches?.('pivot-button-view-model, [class*="PivotButton"]') ||
-      child.querySelector?.('pivot-button-view-model, [class*="PivotButton"]')
-    ));
     const mountRect = mount.getBoundingClientRect();
-    const audioRect = trailingAudioButton?.getBoundingClientRect?.();
     const slotWidth = 72;
     const slotHeight = 72;
     const left = mountRect.left + (mountRect.width - slotWidth) / 2;
-    const preferredTop = audioRect?.height
-      ? audioRect.top - slotHeight - 4
-      : mountRect.bottom - slotHeight;
+    const visibleControls = [...mount.children]
+      .map((element) => element.getBoundingClientRect())
+      .filter((rect) => rect.width > 0 && rect.height > 0 && rect.bottom > 0 && rect.top < window.innerHeight)
+      .sort((a, b) => a.top - b.top);
+    const firstControlRect = visibleControls[0] || mountRect;
+    const preferredTop = firstControlRect.top - slotHeight - 4;
     slot.style.left = `${Math.round(Math.max(0, Math.min(window.innerWidth - slotWidth, left)))}px`;
     slot.style.top = `${Math.round(Math.max(0, Math.min(window.innerHeight - slotHeight, preferredTop)))}px`;
   }

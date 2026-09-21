@@ -45,6 +45,7 @@ import {
     currentDownload: null,
     nextDownloadId: 1,
     activeAnchor: null,
+    activeYoutubeVideoId: null,
     activeXContext: null,
     xButtonContexts: new WeakMap(),
     xContexts: new Set(),
@@ -1109,13 +1110,36 @@ import {
       return result;
     }
 
+    // The page can be signed in while userscript-created Innertube requests are
+    // still treated as anonymous because YouTube's authentication cookies are
+    // HttpOnly and unavailable through document.cookie. Shorts already playing
+    // in the signed-in page expose their authorized googlevideo requests to the
+    // resource observer, so use those tracks when the standalone clients are
+    // rejected with LOGIN_REQUIRED/bot verification.
+    const pageTitle = document.title.replace(/\s*-\s*YouTube\s*$/i, '');
+    const capturedBaseInfo = {
+      basic_info: { id: videoId, title: pageTitle },
+      streaming_data: { formats: [], adaptive_formats: [] }
+    };
+    const capturedFallback = mergeCapturedYoutubeFormats(videoId, capturedBaseInfo);
+    if (scoreYoutubeInfo(capturedFallback.info) >= 0) {
+      const result = {
+        info: capturedFallback.info,
+        client: (isChinese ? '当前网页播放器' : 'Current page player'),
+        sabrInfo: null,
+        sabrClient: ''
+      };
+      state.youtubeInfo.set(videoId, result);
+      return result;
+    }
+
     if (!youtube) {
       throw new Error((isChinese ? `YouTube 客户端初始化失败。${errors.length ? `\n${errors.join('\n')}` : ''}` : `YouTube client initialization failed.${errors.length ? `\n${errors.join('\n')}` : ''}`));
     }
 
     const loginRequired = errors.some((message) => /LOGIN_REQUIRED|确认你的年龄|确认您的年龄/.test(message));
     const hint = loginRequired
-      ? (isChinese ? '部分 YouTube 接口要求登录或年龄验证。请确认该视频在当前账号下能正常播放，再刷新页面重试；如果网页已能播放，请反馈浏览器、脚本管理器及其版本和视频链接，以排查页面会话读取问题。' : "Some YouTube endpoints require sign-in or age verification. Confirm that this account can play the video, then reload the page. If playback already works, report your browser, userscript manager and versions, and video URL so we can investigate session access.")
+      ? (isChinese ? 'YouTube 拒绝了脚本的独立客户端请求；网页登录状态不会自动传给该客户端。请让当前视频播放 2～3 秒，使脚本捕获已登录播放器的媒体请求，然后点击“刷新”。' : "YouTube rejected the userscript's standalone client request; the page sign-in session is not automatically shared with that client. Play the current video for 2–3 seconds so the script can capture the signed-in player's media requests, then click Refresh.")
       : (isChinese ? '请先确认当前网页能正常播放该视频，再刷新重试。' : "Confirm that the video plays on this page, then refresh and try again.");
     throw new Error((isChinese ? `无法取得 YouTube 媒体信息。${hint}${errors.length ? `\n${errors.join('\n')}` : ''}` : `Could not retrieve YouTube media information.${hint}${errors.length ? `\n${errors.join('\n')}` : ''}`));
   }
@@ -2589,6 +2613,43 @@ import {
         appearance: none !important; opacity: 1 !important; visibility: visible !important;
       }
       .${BUTTON_CLASS}:hover { background: #d9d9d9 !important; }
+      .ytx-youtube-shorts-slot {
+        position: fixed !important; z-index: 2147483000 !important;
+        display: flex !important; align-items: flex-start !important; justify-content: center !important;
+        width: 72px !important; height: 72px !important; margin: 0 !important; padding: 0 !important;
+        pointer-events: none !important; opacity: 1 !important; visibility: visible !important;
+      }
+      .${BUTTON_CLASS}.ytx-youtube-shorts-button {
+        flex-direction: column !important; gap: 4px !important; width: 72px !important;
+        min-height: 68px !important; padding: 0 !important; border-radius: 0 !important;
+        background: transparent !important; color: var(--yt-spec-text-primary, #fff) !important;
+        font: 500 12px/1.2 Roboto,Arial,sans-serif !important;
+        pointer-events: auto !important;
+      }
+      .${BUTTON_CLASS}.ytx-youtube-shorts-button:hover { background: transparent !important; }
+      .${BUTTON_CLASS}.ytx-youtube-shorts-button .ytx-shorts-download-icon {
+        display: inline-flex !important; align-items: center !important; justify-content: center !important;
+        width: 48px !important; height: 48px !important; padding: 0 !important; border-radius: 50% !important;
+        background: var(--yt-spec-badge-chip-background, rgba(0,0,0,.6)) !important;
+        color: inherit !important;
+      }
+      .${BUTTON_CLASS}.ytx-youtube-shorts-button .ytx-shorts-download-icon svg {
+        width: 24px !important; height: 24px !important; fill: currentColor !important;
+      }
+      .${BUTTON_CLASS}.ytx-youtube-shorts-button .ytx-shorts-download-label {
+        display: block !important; width: 72px !important; overflow: hidden !important;
+        color: inherit !important; font: 500 12px/1.15 Roboto,Arial,sans-serif !important;
+        text-align: center !important; text-overflow: ellipsis !important; white-space: nowrap !important;
+      }
+      .${BUTTON_CLASS}.ytx-youtube-shorts-button .ytx-shorts-download-label.long {
+        font-size: 10px !important;
+      }
+      .${BUTTON_CLASS}.ytx-youtube-shorts-button .ytx-shorts-download-label.tiny {
+        font-size: 9px !important;
+      }
+      .${BUTTON_CLASS}.ytx-youtube-shorts-button:hover .ytx-shorts-download-icon {
+        background: var(--yt-spec-10-percent-layer, rgba(255,255,255,.2)) !important;
+      }
       .${BUTTON_CLASS}.ytx-x-button {
         min-height: 34px !important; border-radius: 17px !important;
         background: #1d9bf0 !important; color: #fff !important;
@@ -2611,7 +2672,14 @@ import {
         isolation: isolate; opacity: 1 !important; pointer-events: auto !important;
       }
       #${PANEL_ID} * { box-sizing: border-box; }
-      #${PANEL_ID} .ytx-head { display:flex; align-items:center; gap:8px; margin-bottom:10px; cursor:move; user-select:none; touch-action:none; }
+      #${PANEL_ID} .ytx-head {
+        position: sticky; top: -14px; z-index: 10;
+        display:flex; align-items:center; gap:8px;
+        margin: -14px -14px 10px; padding: 14px;
+        border-bottom: 1px solid #383838; border-radius: 12px 12px 0 0;
+        background: #141414; box-shadow: 0 5px 10px rgba(0,0,0,.18);
+        cursor:move; user-select:none; touch-action:none;
+      }
       #${PANEL_ID} .ytx-title { font-size:15px; font-weight:700; flex:1; }
       #${PANEL_ID} button { border:0; border-radius:7px; padding:7px 10px; cursor:pointer; background:#333; color:#fff; }
       #${PANEL_ID} button:hover { background:#444; }
@@ -2667,6 +2735,7 @@ import {
     try { p?.hidePopover?.(); } catch { /* ignore */ }
     p?.remove();
     state.activeAnchor = null;
+    state.activeYoutubeVideoId = null;
     state.activeXContext = null;
     state.panelPosition = null;
     state.panelDetached = false;
@@ -2906,7 +2975,7 @@ import {
   }
 
   async function renderYoutube(force = false) {
-    const id = getYoutubeVideoId();
+    const id = state.activeYoutubeVideoId || getYoutubeVideoId();
     const body = panelBody();
     if (!body) return;
 
@@ -3266,13 +3335,14 @@ import {
     positionPanel();
   }
 
-  function togglePanel(anchor, xContext = null) {
+  function togglePanel(anchor, xContext = null, youtubeVideoId = null) {
     if (panel() && state.activeAnchor === anchor) {
       removePanel();
       return;
     }
 
     removePanel();
+    state.activeYoutubeVideoId = youtubeVideoId;
     makePanelShell(isYoutubeHost() ? (isChinese ? 'YouTube 直接下载' : "YouTube Direct Download") : (isChinese ? 'X 直接下载' : "X Direct Download"), anchor, xContext);
     void refreshPanel(false).catch((error) => showError(error));
   }
@@ -3307,9 +3377,13 @@ import {
 
     state.lastActivationAt = now;
     state.lastActivationButton = button;
+    const youtubeVideoId = button.dataset.ytxAction === 'youtube'
+      ? button.dataset.ytxYoutubeVideoId || getYoutubeVideoId()
+      : null;
     togglePanel(
       button,
-      button.dataset.ytxAction === 'x' ? getXButtonContext(button) : null
+      button.dataset.ytxAction === 'x' ? getXButtonContext(button) : null,
+      youtubeVideoId
     );
   }
 
@@ -3332,9 +3406,179 @@ import {
     return button;
   }
 
+  function getVisibleElementMetrics(element) {
+    const rect = element.getBoundingClientRect();
+    const visibleWidth = Math.max(0, Math.min(rect.right, window.innerWidth) - Math.max(rect.left, 0));
+    const visibleHeight = Math.max(0, Math.min(rect.bottom, window.innerHeight) - Math.max(rect.top, 0));
+    return {
+      element,
+      rect,
+      visibleArea: visibleWidth * visibleHeight,
+      distance: Math.hypot(
+        rect.left + rect.width / 2 - window.innerWidth / 2,
+        rect.top + rect.height / 2 - window.innerHeight / 2
+      )
+    };
+  }
+
+  function pickVisibleYoutubeShortsMount(elements) {
+    return [...new Set(elements)]
+      .map(getVisibleElementMetrics)
+      .filter(({ element, rect, visibleArea }) => (
+        element.isConnected &&
+        rect.width > 0 &&
+        rect.height > 0 &&
+        visibleArea > 0 &&
+        getComputedStyle(element).visibility !== 'hidden'
+      ))
+      .sort((a, b) => b.visibleArea - a.visibleArea || a.distance - b.distance)[0]?.element || null;
+  }
+
+  function findYoutubeShortsActionBarFromControls() {
+    const controls = document.querySelectorAll([
+      'ytd-reel-video-renderer button[aria-label*="分享"]',
+      'ytd-reel-video-renderer button[aria-label*="Share"]',
+      'ytd-reel-video-renderer button[aria-label*="混剪"]',
+      'ytd-reel-video-renderer button[aria-label*="Remix"]',
+      'ytd-shorts button[aria-label*="分享"]',
+      'ytd-shorts button[aria-label*="Share"]'
+    ].join(','));
+
+    const candidates = [];
+    for (const control of controls) {
+      let ancestor = control.parentElement;
+      for (let depth = 0; ancestor && depth < 7; depth += 1, ancestor = ancestor.parentElement) {
+        const rect = ancestor.getBoundingClientRect();
+        const buttonCount = ancestor.querySelectorAll('button, [role="button"]').length;
+        if (rect.width <= 180 && rect.height >= 120 && buttonCount >= 3) {
+          candidates.push(ancestor);
+          break;
+        }
+      }
+    }
+    return pickVisibleYoutubeShortsMount(candidates);
+  }
+
+  function findActiveYoutubeShortsMount() {
+    const directCandidates = document.querySelectorAll([
+      'ytd-reel-video-renderer reel-action-bar-view-model',
+      'ytd-reel-video-renderer #actions',
+      'ytd-reel-video-renderer [class*="ReelActionBar"]',
+      'ytd-shorts reel-action-bar-view-model',
+      'ytd-shorts #actions',
+      'ytd-shorts [class*="ReelActionBar"]'
+    ].join(','));
+    const direct = pickVisibleYoutubeShortsMount(directCandidates);
+    if (direct) return direct;
+
+    const inferred = findYoutubeShortsActionBarFromControls();
+    if (inferred) return inferred;
+
+    // Last-resort fallback for layouts where the action bar itself uses
+    // display:contents: select the visible reel by one of its measurable children.
+    const viewportCenterX = window.innerWidth / 2;
+    const viewportCenterY = window.innerHeight / 2;
+    const reel = [...document.querySelectorAll('ytd-reel-video-renderer')]
+      .map((reel) => {
+        const measurable = reel.querySelector('#short-video-container, video, ytd-player') || reel;
+        const rect = measurable.getBoundingClientRect();
+        const visibleWidth = Math.max(0, Math.min(rect.right, window.innerWidth) - Math.max(rect.left, 0));
+        const visibleHeight = Math.max(0, Math.min(rect.bottom, window.innerHeight) - Math.max(rect.top, 0));
+        const visibleArea = visibleWidth * visibleHeight;
+        const distance = Math.hypot(
+          rect.left + rect.width / 2 - viewportCenterX,
+          rect.top + rect.height / 2 - viewportCenterY
+        );
+        return { reel, rect, visibleArea, distance };
+      })
+      .filter(({ rect, visibleArea }) => rect.width > 0 && rect.height > 0 && visibleArea > 0)
+      .sort((a, b) => b.visibleArea - a.visibleArea || a.distance - b.distance)[0]?.reel || null;
+    return reel?.querySelector('reel-action-bar-view-model, #actions, [class*="ReelActionBar"]') || null;
+  }
+
+  function createYoutubeShortsButton(videoId) {
+    const title = isChinese ? '下载当前 YouTube Shorts 视频' : 'Download this YouTube Short';
+    const button = createContextButton('', title, 'ytx-youtube-button ytx-youtube-shorts-button', 'youtube');
+    button.dataset.ytxYoutubeVideoId = videoId;
+
+    const icon = document.createElement('span');
+    icon.className = 'ytx-shorts-download-icon';
+    icon.setAttribute('aria-hidden', 'true');
+    const svg = document.createElementNS('http://www.w3.org/2000/svg', 'svg');
+    svg.setAttribute('viewBox', '0 0 24 24');
+    const path = document.createElementNS('http://www.w3.org/2000/svg', 'path');
+    path.setAttribute('d', 'M11 4h2v9.17l3.59-3.58L18 11l-6 6-6-6 1.41-1.41L11 13.17V4zm-5 15h12v2H6v-2z');
+    svg.appendChild(path);
+    icon.appendChild(svg);
+
+    const label = document.createElement('span');
+    label.className = 'ytx-shorts-download-label';
+    label.textContent = isChinese ? '直接下载' : 'Direct Download';
+    if (label.textContent.length > 14) label.classList.add('tiny');
+    else if (label.textContent.length > 6) label.classList.add('long');
+    button.append(icon, label);
+    return button;
+  }
+
+  function positionYoutubeShortsSlot(slot, mount) {
+    const trailingAudioButton = [...mount.children].find((child) => (
+      child.matches?.('pivot-button-view-model, [class*="PivotButton"]') ||
+      child.querySelector?.('pivot-button-view-model, [class*="PivotButton"]')
+    ));
+    const mountRect = mount.getBoundingClientRect();
+    const audioRect = trailingAudioButton?.getBoundingClientRect?.();
+    const slotWidth = 72;
+    const slotHeight = 72;
+    const left = mountRect.left + (mountRect.width - slotWidth) / 2;
+    const preferredTop = audioRect?.height
+      ? audioRect.top - slotHeight - 4
+      : mountRect.bottom - slotHeight;
+    slot.style.left = `${Math.round(Math.max(0, Math.min(window.innerWidth - slotWidth, left)))}px`;
+    slot.style.top = `${Math.round(Math.max(0, Math.min(window.innerHeight - slotHeight, preferredTop)))}px`;
+  }
+
+  function mountYoutubeShortsButton(mount, button) {
+    const slot = document.createElement('div');
+    slot.className = 'ytx-youtube-shorts-slot';
+    slot.dataset.ytxShortsOverlay = 'true';
+    slot.appendChild(button);
+    document.body.appendChild(slot);
+    positionYoutubeShortsSlot(slot, mount);
+    return slot;
+  }
+
   function ensureYoutubeButton() {
     if (!document.body) return;
     injectStyle();
+    const videoId = getYoutubeVideoId();
+    const isShortsPage = /^\/shorts\//.test(location.pathname);
+    const existingButtons = [...document.querySelectorAll(`.${BUTTON_CLASS}.ytx-youtube-button`)];
+    const existingShortsSlots = [...document.querySelectorAll('.ytx-youtube-shorts-slot')];
+
+    if (isShortsPage) {
+      const mount = findActiveYoutubeShortsMount();
+      if (!mount || !videoId) {
+        existingButtons.forEach((button) => button.remove());
+        existingShortsSlots.forEach((slot) => slot.remove());
+        return;
+      }
+
+      const existing = existingButtons.find((button) => button.closest('.ytx-youtube-shorts-slot'));
+      const existingSlot = existing?.closest('.ytx-youtube-shorts-slot') || null;
+      existingButtons.filter((button) => button !== existing).forEach((button) => button.remove());
+      existingShortsSlots.filter((slot) => slot !== existingSlot).forEach((slot) => slot.remove());
+      if (existing) {
+        existing.dataset.ytxYoutubeVideoId = videoId;
+        positionYoutubeShortsSlot(existingSlot, mount);
+        return;
+      }
+
+      mountYoutubeShortsButton(mount, createYoutubeShortsButton(videoId));
+      return;
+    }
+
+    existingShortsSlots.forEach((slot) => slot.remove());
+
     const selectors = [
       'ytd-watch-metadata #top-level-buttons-computed',
       '#below #top-level-buttons-computed',
@@ -3342,7 +3586,6 @@ import {
       '#below #actions-inner'
     ];
     const mount = selectors.map((selector) => document.querySelector(selector)).find(Boolean);
-    const existingButtons = [...document.querySelectorAll(`.${BUTTON_CLASS}.ytx-youtube-button`)];
     if (!mount) {
       existingButtons.forEach((button) => button.remove());
       return;
@@ -3352,9 +3595,13 @@ import {
     existingButtons
       .filter((button) => button !== existing)
       .forEach((button) => button.remove());
-    if (existing) return;
+    if (existing) {
+      if (videoId) existing.dataset.ytxYoutubeVideoId = videoId;
+      return;
+    }
 
     const button = createContextButton((isChinese ? '↓ 高清下载' : "↓ HD Download"), (isChinese ? '在当前 YouTube 视频下方打开下载选项' : "Open download options for this YouTube video"), 'ytx-youtube-button', 'youtube');
+    if (videoId) button.dataset.ytxYoutubeVideoId = videoId;
     mount.appendChild(button);
   }
 
@@ -3485,6 +3732,7 @@ import {
   function removeContextButtonsForOtherHost() {
     if (!isYoutubeHost()) {
       document.querySelectorAll(`.${BUTTON_CLASS}.ytx-youtube-button`).forEach((button) => button.remove());
+      document.querySelectorAll('.ytx-youtube-shorts-slot').forEach((slot) => slot.remove());
     }
     if (!isXHost()) {
       document.querySelectorAll('.ytx-x-download-slot').forEach((slot) => slot.remove());

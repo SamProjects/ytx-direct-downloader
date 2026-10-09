@@ -49,6 +49,8 @@ const baseMetadata = `// ==UserScript==
 // @match        https://twitter.com/*
 // @grant        GM_xmlhttpRequest
 // @grant        GM_download
+// @grant        GM_getValue
+// @grant        GM_setValue
 // @grant        unsafeWindow
 // @connect      youtube.com
 // @connect      *.youtube.com

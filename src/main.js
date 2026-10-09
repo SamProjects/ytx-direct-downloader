@@ -1,4 +1,5 @@
 import { isChinese } from './i18n.js';
+import { boundedRangeFetch, downloadRanges } from './range-download.js';
 import { Innertube, Parser, Platform, YTNodes, SabrStream } from './runtime.js';
 import {
   ALL_FORMATS,
@@ -23,8 +24,20 @@ import {
   const BUTTON_CLASS = `${APP}-context-button`;
   const PANEL_ID = `${APP}-panel`;
   const STYLE_ID = `${APP}-style`;
+  const CONCURRENCY_KEY = `${APP}-concurrency`;
+
+  function normalizeConcurrency(value) {
+    const count = Number(value);
+    return Number.isInteger(count) && count >= 1 && count <= 8 ? count : 4;
+  }
+
+  function loadConcurrency() {
+    try { return normalizeConcurrency(GM_getValue(CONCURRENCY_KEY, 4)); }
+    catch { return 4; }
+  }
 
   const state = {
+    downloadConcurrency: loadConcurrency(),
     youtubePromise: null,
     youtubeInfo: new Map(),
     youtubeUrlCache: new WeakMap(),
@@ -257,6 +270,7 @@ import {
       if (request.signal) {
         abortListener = () => xhr.abort();
         request.signal.addEventListener('abort', abortListener, { once: true });
+        if (request.signal.aborted) abortListener();
       }
     });
   }
@@ -504,6 +518,7 @@ import {
   function enqueueDownload(label, run, options = {}) {
     const task = {
       id: state.nextDownloadId++,
+      concurrency: state.downloadConcurrency,
       label,
       run,
       status: 'queued',
@@ -1959,13 +1974,15 @@ import {
   // ---------------------------------------------------------------------------
   // Browser-local remux
   // ---------------------------------------------------------------------------
-  function createRemoteInput(url, formats = ALL_FORMATS) {
+  const gmMediaFetch = boundedRangeFetch(gmFetch);
+
+  function createRemoteInput(url, formats = ALL_FORMATS, concurrency = state.downloadConcurrency) {
     assertAllowedNetworkUrl(url);
     return new Input({
       source: new UrlSource(url, {
-        fetchFn: gmFetch,
+        fetchFn: gmMediaFetch,
         maxCacheSize: 16 * 1024 * 1024,
-        parallelism: 2,
+        parallelism: concurrency,
         getRetryDelay(previousAttempts) {
           return previousAttempts >= 4 ? null : Math.min(2 ** previousAttempts, 8);
         }
@@ -2104,8 +2121,8 @@ import {
       decipherYoutubeFormat(info, audioFormat)
     ]);
 
-    const videoInput = createRemoteInput(videoUrl, ALL_FORMATS);
-    const audioInput = createRemoteInput(audioUrl, ALL_FORMATS);
+    const videoInput = createRemoteInput(videoUrl, ALL_FORMATS, task?.concurrency);
+    const audioInput = createRemoteInput(audioUrl, ALL_FORMATS, task?.concurrency);
 
     let videoTrack;
     let audioTrack;
@@ -2463,6 +2480,16 @@ import {
     assertAllowedNetworkUrl(url);
     const requestUrl = new URL(url);
     ['range', 'rn', 'rbuf'].forEach((parameter) => requestUrl.searchParams.delete(parameter));
+    const handled = await downloadRanges({
+      url: requestUrl.href,
+      fileHandle,
+      task,
+      fetchFn: gmFetch,
+      waitForTask: waitForDownloadTask,
+      concurrency: task.concurrency,
+      onProgress
+    });
+    if (handled) return;
     const writer = await fileHandle.createWritable();
     const chunkSize = 4 * 1024 * 1024;
     let position = 0;
@@ -2688,6 +2715,10 @@ import {
         cursor:move; user-select:none; touch-action:none;
       }
       #${PANEL_ID} .ytx-title { font-size:15px; font-weight:700; flex:1; }
+      #${PANEL_ID} .ytx-settings { margin:0 0 10px; padding:10px; border-radius:8px; background:#222; }
+      #${PANEL_ID} .ytx-settings label { display:flex; align-items:center; justify-content:space-between; gap:10px; }
+      #${PANEL_ID} .ytx-settings select { padding:5px 8px; border:1px solid #555; border-radius:6px; background:#333; color:#fff; }
+      #${PANEL_ID} .ytx-settings-note { margin-top:6px; color:#aaa; font-size:11px; }
       #${PANEL_ID} button { border:0; border-radius:7px; padding:7px 10px; cursor:pointer; background:#333; color:#fff; }
       #${PANEL_ID} button:hover { background:#444; }
       #${PANEL_ID} .ytx-format { padding:10px; margin:7px 0; border-radius:8px; background:#292929; cursor:pointer; }
@@ -2936,7 +2967,33 @@ import {
     security.textContent = (isChinese ? '运行时网络白名单：YouTube / googlevideo.com / video.twimg.com；无第三方解析站、广告、统计、返利链接。' : "Runtime network allowlist: YouTube / googlevideo.com / video.twimg.com. No third-party parsing services, ads, analytics, or affiliate links.");
 
     head.append(titleElement, refreshButton, closeButton);
-    p.append(head, body, tasks, security);
+    const settings = document.createElement('div');
+    settings.className = 'ytx-settings';
+    const concurrencyLabel = document.createElement('label');
+    concurrencyLabel.textContent = isChinese ? '单文件下载并发数' : 'Single-file download connections';
+    const concurrencySelect = document.createElement('select');
+    concurrencySelect.dataset.role = 'concurrency';
+    for (let count = 1; count <= 8; count += 1) {
+      const option = document.createElement('option');
+      option.value = String(count);
+      option.textContent = isChinese ? `${count} 路${count === 1 ? '（串行）' : ''}` : `${count}${count === 1 ? ' (sequential)' : ''}`;
+      concurrencySelect.appendChild(option);
+    }
+    concurrencySelect.value = String(state.downloadConcurrency);
+    concurrencySelect.onchange = () => {
+      state.downloadConcurrency = normalizeConcurrency(concurrencySelect.value);
+      try { GM_setValue(CONCURRENCY_KEY, state.downloadConcurrency); } catch { /* session setting still applies */ }
+      // X's remux inputs are prepared while listing formats; rebuild those inputs.
+      void refreshPanel().catch(showError);
+    };
+    concurrencyLabel.appendChild(concurrencySelect);
+    const settingsNote = document.createElement('div');
+    settingsNote.className = 'ytx-settings-note';
+    settingsNote.textContent = isChinese
+      ? '默认 4 路，设置自动保存，对新任务生效。普通直链分块并发；合并时为每个媒体源的读取并发上限。SABR 和 Tampermonkey 直接下载不适用。'
+      : 'Default: 4. Saved for new tasks. Direct files use concurrent ranges; remux uses this read limit per source. Excludes SABR and Tampermonkey direct downloads.';
+    settings.append(concurrencyLabel, settingsNote);
+    p.append(head, settings, body, tasks, security);
 
     closeButton.onclick = () => {
       removePanel();

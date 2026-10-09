@@ -9,6 +9,7 @@
 - 下载按钮位于 YouTube 普通视频下方操作栏、Shorts 当前视频右侧操作栏，以及 X 每条视频区域下方。
 - 界面自动跟随浏览器首选语言：中文（包括 `zh-CN`、`zh-TW`、`zh-HK`）显示简体中文，其他语言显示英文。更改浏览器语言后刷新页面即可生效；视频标题、文件名和服务器返回的原始错误不做翻译。
 - 大文件通过 File System Access API 流式写入磁盘，不需要把完整文件一次性放进内存。
+- 悬浮下载框顶部可设置单文件下载并发数（1–8 路，默认 4 路），通过 Tampermonkey 保存设置，YouTube 和 X 共用；下载任务队列仍逐个执行。
 - 独立单文件版不调用第三方解析站，不使用运行时 `@require` 或 CDN；Greasy Fork 可读版只通过固定版本、带 SRI 校验的 `@require` 加载本项目公开的运行库文件。
 
 ## Greasy Fork 用户使用说明
@@ -16,7 +17,7 @@
 ### 安装
 
 1. 安装最新版 Tampermonkey。
-2. 在 [Greasy Fork](https://greasyfork.org/zh-CN) 页面安装本脚本，或者从 GitHub Releases 下载 `ytx-direct-downloader.user.js` 后拖入 Tampermonkey。
+2. 打开 [GitHub 项目页面](https://github.com/SamProjects/ytx-direct-downloader)，进入 Releases 下载 `ytx-direct-downloader.user.js`，然后拖入 Tampermonkey 安装。
 3. 安装后刷新 YouTube 或 X 页面。
 
 脚本只匹配以下网站：
@@ -40,9 +41,20 @@ X 播放器会产生初始化片段、范围请求、单独音频和 HLS 清单�
 
 如果文件名无法从媒体响应中取得，脚本会使用“上传者 ID_状态 ID_分辨率”的格式，不会再使用页面标题“主页”等名称。
 
+### 单文件并发下载
+
+在下载框顶部选择“单文件下载并发数”，1 路为串行，默认 4 路，最多 8 路。设置对新加入队列的任务生效，已排队或正在运行的任务保持原设置。
+
+- 普通 YouTube/X 直链使用 4 MiB 分块并发请求，校验每块的范围和长度后按偏移写盘，不将完整文件拼入内存；服务器不支持 Range 时按完整响应保存，总长度未知时回退串行。
+- 音视频合并使用 Mediabunny 的远程读取并发上限，按每个媒体源分别计算；实际请求数量由库的读取和预取调度决定。调整设置后会刷新资源列表，让 X 的预先创建的媒体源使用新设置。
+- SABR/UMP 仍由专用协议下载；不支持 File System Access API 时使用的 `GM_download` 不受此设置控制。
+- 并发下载支持当前页面会话内暂停、恢复和取消，失败的分块会有限重试。遇到文件大小变化、分块异常或磁盘错误时会终止任务，避免保存损坏文件。
+
+建议先用 4 路；并发数更高不一定更快，效果取决于 CDN、浏览器连接调度和本地带宽。
+
 ### 权限和网络范围
 
-脚本需要 Tampermonkey 提供 `GM_xmlhttpRequest`、`GM_download` 和 `unsafeWindow` 权限。运行时主动访问的域名限制为：
+脚本需要 Tampermonkey 提供 `GM_xmlhttpRequest`、`GM_download`、`GM_getValue`、`GM_setValue` 和 `unsafeWindow` 权限；后两项用于保存并发设置。运行时主动访问的域名限制为：
 
 - `youtube.com` / `*.youtube.com`
 - `youtubei.googleapis.com`
@@ -160,6 +172,7 @@ dist/ytx-direct-downloader.greasy.user.js
 ### 本地检查
 
 ```bash
+npm test
 node --check src/main.js
 node --check build.mjs
 node --check dist/ytx-direct-downloader.user.js
@@ -260,10 +273,10 @@ Greasy Fork 版的主脚本包含下载器完整逻辑，只有两个大型第�
 
 ## 依赖
 
-- [youtubei.js](https://github.com/LuanRT/YouTube.js) 18.0.0（MIT）
+- [youtubei.js](https://github.com/LuanRT/YouTube.js) 18.1.0（MIT）
 - [googlevideo](https://github.com/LuanRT/googlevideo) 4.1.1（MIT）
-- [mediabunny](https://github.com/Vanilagy/mediabunny) 1.52.3（MPL-2.0）
-- [esbuild](https://github.com/evanw/esbuild) 0.28.0（MIT，仅用于构建）
+- [mediabunny](https://github.com/Vanilagy/mediabunny) 1.61.3（MPL-2.0）
+- [esbuild](https://github.com/evanw/esbuild) 0.28.2（MIT，仅用于构建）
 
 ## 许可证
 

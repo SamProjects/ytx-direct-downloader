@@ -1,5 +1,6 @@
 import { isChinese } from './i18n.js';
 import { boundedRangeFetch, downloadRanges } from './range-download.js';
+import { audioLanguage, audioLanguageOptions, browserAudioLanguage, preferredAudioLanguage, selectAudioLanguageFormat, audioLanguageLabel } from './audio-language.js';
 import { Innertube, Parser, Platform, YTNodes, SabrStream } from './runtime.js';
 import {
   ALL_FORMATS,
@@ -38,6 +39,8 @@ import {
 
   const state = {
     downloadConcurrency: loadConcurrency(),
+    youtubeAudioLanguages: new Map(),
+    youtubeRenderId: 0,
     youtubePromise: null,
     youtubeInfo: new Map(),
     youtubeUrlCache: new WeakMap(),
@@ -909,20 +912,19 @@ import {
     };
   }
 
-  function selectYoutubeSabrAudioFormat(info, videoFormat) {
+  function selectYoutubeSabrAudioFormat(info, videoFormat, language = '') {
     const container = mimeContainer(videoFormat?.mime_type);
     const candidates = (info?.streaming_data?.adaptive_formats || [])
       .filter((format) => {
         if (!format?.has_audio || format.has_video || format.is_type_otf || isDrmFormat(format)) return false;
         if (!format.mime_type) return false;
         return !container || mimeContainer(format.mime_type) === container;
-      })
-      .sort((a, b) => Number(b.bitrate || b.average_bitrate || 0) - Number(a.bitrate || a.average_bitrate || 0));
+      });
 
-    return candidates[0] || null;
+    return selectAudioLanguageFormat(candidates, language);
   }
 
-  function getYoutubeSabrFormatPairs(info) {
+  function getYoutubeSabrFormatPairs(info, language = '') {
     const streaming = info?.streaming_data;
     if (!streaming?.server_abr_streaming_url) return [];
 
@@ -934,7 +936,7 @@ import {
     ]) {
       if (!rawVideo?.has_video || rawVideo.is_type_otf || isDrmFormat(rawVideo)) continue;
       if (!rawVideo.mime_type || !mimeContainer(rawVideo.mime_type)) continue;
-      const rawAudio = selectYoutubeSabrAudioFormat(info, rawVideo);
+      const rawAudio = selectYoutubeSabrAudioFormat(info, rawVideo, language);
       if (!rawAudio) continue;
 
       const video = youtubeSabrFormatFromFormat(rawVideo);
@@ -1177,8 +1179,11 @@ import {
       if (isDrmFormat(format)) continue;
       if (!hasYoutubeFormatSource(format)) continue;
       if (!format.mime_type) continue;
-      if (seen.has(format.itag)) continue;
-      seen.add(format.itag);
+      const key = format.has_audio
+        ? `${format.itag}:${format.xtags || ''}:${format.audio_track?.id || ''}:${audioLanguage(format)}`
+        : String(format.itag);
+      if (seen.has(key)) continue;
+      seen.add(key);
       result.push(format);
     }
 
@@ -1206,7 +1211,7 @@ import {
     return all.some((format) => !hasYoutubeFormatSource(format) && !isDrmFormat(format));
   }
 
-  function selectYoutubeAudioFormat(info, videoFormat) {
+  function selectYoutubeAudioFormat(info, videoFormat, language = '') {
     const container = mimeContainer(videoFormat.mime_type);
     if (!container) return null;
 
@@ -1217,19 +1222,7 @@ import {
       return mimeContainer(format.mime_type) === container;
     });
 
-    candidates.sort((a, b) => {
-      const score = (f) => {
-        let value = Number(f.bitrate || f.average_bitrate || 0);
-        if (f.audio_track?.audio_is_default) value += 10_000_000_000;
-        if (f.is_original) value += 1_000_000_000;
-        if (f.is_drc) value -= 2_000_000_000;
-        if (f.is_vb) value -= 1_000_000_000;
-        return value;
-      };
-      return score(b) - score(a);
-    });
-
-    return candidates[0] || null;
+    return selectAudioLanguageFormat(candidates, language);
   }
 
   async function decipherYoutubeFormat(info, format) {
@@ -1472,7 +1465,8 @@ import {
 
   function capturedYoutubeFormat(videoId, media) {
     const metadata = state.youtubeFormatMetadata.get(videoId);
-    const source = metadata?.get(`${media.itag}:${media.xtags}`) || metadata?.get(String(media.itag));
+    const source = metadata?.get(`${media.itag}:${media.xtags}`)
+      || (media.xtags ? null : metadata?.get(String(media.itag)));
     const fallback = YOUTUBE_ITAG_FALLBACKS.get(media.itag) || [media.kind, 'mp4', 0, 0];
     const kind = source?.has_video && source?.has_audio
       ? 'muxed'
@@ -1483,9 +1477,21 @@ import {
           : fallback[0];
     const container = mimeContainer(source?.mime_type) || fallback[1];
     const mimeType = source?.mime_type || `${kind === 'audio' ? 'audio' : 'video'}/${container}`;
+    let languageMetadata = {};
+    if (!source && media.xtags && kind !== 'video') {
+      try {
+        const parsed = Parser.parseFormats([{ itag: media.itag, mimeType, xtags: media.xtags,
+          audioQuality: 'AUDIO_QUALITY_MEDIUM' }])[0];
+        for (const key of ['language', 'is_original', 'is_dubbed', 'is_auto_dubbed', 'is_descriptive', 'is_secondary']) {
+          languageMetadata[key] = parsed[key];
+        }
+      } catch { /* Unknown captured language must not inherit a different track's metadata. */ }
+    }
 
     return {
       ...(source || {}),
+      ...languageMetadata,
+      xtags: media.xtags || source?.xtags,
       itag: media.itag,
       url: media.url,
       mime_type: mimeType,
@@ -2253,7 +2259,7 @@ import {
       clientInfo: youtubeSabrClientInfo(info),
       poToken: info?.actions?.session?.po_token || state.youtubeSessionPoToken || undefined,
       durationMs: durationSeconds > 0 ? durationSeconds * 1000 : undefined,
-      formats: formatPairs.flatMap((item) => [item.video, item.audio])
+      formats: [...formatPairs.flatMap((item) => [item.video, item.audio]), pair.video, pair.audio]
     });
     let sabrFinished = false;
     sabr.on('finish', () => { sabrFinished = true; });
@@ -3039,6 +3045,7 @@ import {
   }
 
   async function renderYoutube(force = false) {
+    const renderId = ++state.youtubeRenderId;
     const id = state.activeYoutubeVideoId || getYoutubeVideoId();
     const body = panelBody();
     if (!body) return;
@@ -3053,18 +3060,59 @@ import {
 
     try {
       const loaded = await loadYoutubeInfo(id, force);
+      if (renderId !== state.youtubeRenderId || body !== panelBody()) return;
       const merged = mergeCapturedYoutubeFormats(id, loaded.info);
       const { info, capturedCount, observedCount, capturedSummary } = merged;
       const sabrInfo = loaded.sabrInfo || null;
-      const sabrPairs = getYoutubeSabrFormatPairs(sabrInfo);
+      const audioFormats = [info, sabrInfo].flatMap((entry) => [
+        ...(entry?.streaming_data?.formats || []), ...(entry?.streaming_data?.adaptive_formats || [])
+      ]).filter((format) => format?.has_audio && !format.is_type_otf && !isDrmFormat(format));
+      const languages = audioLanguageOptions(audioFormats);
+      const requestedLanguage = state.youtubeAudioLanguages.get(id) || '';
+      const explicitLanguage = languages.some(({ code }) => code === requestedLanguage) ? requestedLanguage : '';
+      const language = explicitLanguage || preferredAudioLanguage(audioFormats);
+      const languageName = language ? audioLanguageLabel(language) : (isChinese ? '语言未标注' : 'Unspecified language');
+      const sabrPairs = getYoutubeSabrFormatPairs(sabrInfo, language);
       const client = loaded.client;
       const formats = getYoutubeVideoFormats(info);
-      const title = sanitizeFilename(info.basic_info?.title || document.title.replace(/\s*-\s*YouTube\s*$/i, ''));
+      const title = sanitizeFilename((info.basic_info?.title || document.title.replace(/\s*-\s*YouTube\s*$/i, '')) + (languages.length > 1 && language ? ` [${language}]` : ''));
 
       body.replaceChildren();
+      if (languages.length) {
+        const settings = document.createElement('div');
+        settings.className = 'ytx-settings';
+        const label = document.createElement('label');
+        label.textContent = isChinese ? '音频语言' : 'Audio language';
+        const select = document.createElement('select');
+        select.dataset.role = 'audio-language';
+        const automatic = document.createElement('option');
+        automatic.value = '';
+        automatic.textContent = isChinese ? `自动（浏览器语言：${audioLanguageLabel(browserAudioLanguage())}）`
+          : `Automatic (browser: ${audioLanguageLabel(browserAudioLanguage())})`;
+        select.appendChild(automatic);
+        for (const { code, name } of languages.slice().sort((a, b) =>
+          Number(b.code === language) - Number(a.code === language) || a.code.localeCompare(b.code))) {
+          const option = document.createElement('option');
+          option.value = code;
+          option.textContent = `${audioLanguageLabel(code)}${name ? ` · ${name}` : ''}`;
+          select.appendChild(option);
+        }
+        select.value = explicitLanguage;
+        select.onchange = () => {
+          state.youtubeAudioLanguages.set(id, select.value);
+          void renderYoutube().catch(showError);
+        };
+        label.appendChild(select);
+        const note = document.createElement('div');
+        note.className = 'ytx-settings-note';
+        note.textContent = isChinese ? `当前下载语言：${languageName}。默认优先匹配浏览器语言；没有匹配版本时使用可用的默认/原声音轨。其他语言可在上方选择，选择后点击所需画质下载。`
+          : `Download language: ${languageName}. Browser language is preferred, falling back to default/original audio. Select another language above, then click a quality to download.`;
+        settings.append(label, note);
+        body.appendChild(settings);
+      }
       const tip = document.createElement('div');
       tip.className = 'ytx-tip';
-      tip.textContent = (isChinese ? `InnerTube client: ${client}；播放器请求捕获${state.youtubeNetworkCaptureInstalled ? (isChinese ? '已启用' : "enabled") : (isChinese ? '不可用' : "unavailable")}${observedCount ? (isChinese ? `；观察到 ${observedCount} 条媒体轨，新增 ${capturedCount} 条` : `; observed ${observedCount} media tracks, added ${capturedCount} tracks`) : ''}${sabrPairs.length ? (isChinese ? `；SABR 本地轨道 ${sabrPairs.length} 条` : `; local SABR tracks: ${sabrPairs.length} tracks`) : ''}。1080p 以上通常是独立视频轨，点击后会自动选择同容器的最高质量音频并在浏览器内无损合并。` : `InnerTube client: ${client}; player request capture: ${state.youtubeNetworkCaptureInstalled ? (isChinese ? '已启用' : "enabled") : (isChinese ? '不可用' : "unavailable")}${observedCount ? (isChinese ? `；观察到 ${observedCount} 条媒体轨，新增 ${capturedCount} 条` : `; observed ${observedCount} media tracks, added ${capturedCount} tracks`) : ''}${sabrPairs.length ? (isChinese ? `；SABR 本地轨道 ${sabrPairs.length} 条` : `; local SABR tracks: ${sabrPairs.length} tracks`) : ''}. Resolutions above 1080p usually use separate video tracks. Clicking selects the highest-quality compatible audio and merges it losslessly in your browser.`);
+      tip.textContent = (isChinese ? `InnerTube client: ${client}；播放器请求捕获${state.youtubeNetworkCaptureInstalled ? (isChinese ? '已启用' : "enabled") : (isChinese ? '不可用' : "unavailable")}${observedCount ? (isChinese ? `；观察到 ${observedCount} 条媒体轨，新增 ${capturedCount} 条` : `; observed ${observedCount} media tracks, added ${capturedCount} tracks`) : ''}${sabrPairs.length ? (isChinese ? `；SABR 本地轨道 ${sabrPairs.length} 条` : `; local SABR tracks: ${sabrPairs.length} tracks`) : ''}。1080p 以上通常是独立视频轨，点击后会选择当前语言的同容器音频并在浏览器内无损合并。` : `InnerTube client: ${client}; player request capture: ${state.youtubeNetworkCaptureInstalled ? (isChinese ? '已启用' : "enabled") : (isChinese ? '不可用' : "unavailable")}${observedCount ? (isChinese ? `；观察到 ${observedCount} 条媒体轨，新增 ${capturedCount} 条` : `; observed ${observedCount} media tracks, added ${capturedCount} tracks`) : ''}${sabrPairs.length ? (isChinese ? `；SABR 本地轨道 ${sabrPairs.length} 条` : `; local SABR tracks: ${sabrPairs.length} tracks`) : ''}. Resolutions above 1080p usually use separate video tracks. Clicking selects compatible audio in the chosen language and merges it losslessly in your browser.`);
       body.appendChild(tip);
 
       if (!formats.length && !sabrPairs.length) {
@@ -3088,7 +3136,9 @@ import {
         body.appendChild(captureHint);
       }
 
-      const directItags = new Set(formats.map((format) => Number(format.itag)));
+      const directItags = new Set(formats.filter((format) => format.has_audio
+        ? !language || audioLanguage(format) === language
+        : selectYoutubeAudioFormat(info, format, language)).map((format) => Number(format.itag)));
       const sabrOnlyPairs = sabrPairs.filter((pair) => !directItags.has(Number(pair.video.itag)));
       for (const pair of sabrOnlyPairs) {
         const rawVideo = pair.rawVideo;
@@ -3097,7 +3147,7 @@ import {
         const fps = rawVideo.fps ? `${rawVideo.fps}fps` : '';
         const size = formatBytes(pair.video.contentLength);
         const codec = codecLabel(rawVideo.mime_type);
-        const primary = [quality, fps, container.toUpperCase(), (isChinese ? 'SABR 本地合并' : "SABR local merge")].filter(Boolean).join(' · ');
+        const primary = [quality, fps, container.toUpperCase(), languageName, (isChinese ? 'SABR 本地合并' : "SABR local merge")].filter(Boolean).join(' · ');
         const secondary = (isChinese ? `${codec} · ${size} · itag ${pair.video.itag} · YouTube Server ABR，浏览器内合并音频` : `${codec} · ${size} · itag ${pair.video.itag} · YouTube Server ABR, audio merged locally in your browser`);
 
         const row = createFormatRow(primary, secondary, async () => {
@@ -3134,12 +3184,14 @@ import {
         if (!container) continue;
 
         const hasSeparateAudio = !format.has_audio;
-        const audio = hasSeparateAudio ? selectYoutubeAudioFormat(info, format) : null;
+        if (!hasSeparateAudio && language && audioLanguage(format) !== language) continue;
+        const audio = hasSeparateAudio ? selectYoutubeAudioFormat(info, format, language) : null;
         if (hasSeparateAudio && !audio) continue;
 
         try {
           await decipherYoutubeFormat(info, format);
           if (audio) await decipherYoutubeFormat(info, audio);
+          if (renderId !== state.youtubeRenderId || body !== panelBody()) return;
           preparedFormats.push({ format, audio });
         } catch (error) {
           rejectedFormatError = error;
@@ -3165,7 +3217,7 @@ import {
         const codec = codecLabel(format.mime_type);
         const mode = hasSeparateAudio ? (isChinese ? `浏览器内合并 + ${codecLabel(audio.mime_type)}` : `Local merge + ${codecLabel(audio.mime_type)}`) : (isChinese ? '自带音频，直接下载' : "Includes audio, direct download");
         const flags = [format.ytx_captured ? (isChinese ? '播放器捕获' : "Captured from player") : '', format.is_sr ? 'SR' : '', format.is_drc ? 'DRC' : ''].filter(Boolean).join(' ');
-        const primary = [quality, fps, container.toUpperCase(), flags].filter(Boolean).join(' · ');
+        const primary = [quality, fps, container.toUpperCase(), languageName, flags].filter(Boolean).join(' · ');
         const secondary = `${codec} · ${size} · itag ${format.itag} · ${mode}`;
 
         const row = createFormatRow(primary, secondary, async () => {
@@ -3224,6 +3276,7 @@ import {
         body.appendChild(row);
       }
     } catch (error) {
+      if (renderId !== state.youtubeRenderId || body !== panelBody()) return;
       body.replaceChildren();
       showError(error);
     }

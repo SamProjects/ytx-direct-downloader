@@ -1,6 +1,6 @@
 {
   "name": "ytx-direct-downloader",
-  "version": "0.1.29",
+  "version": "0.1.30",
   "license": "MIT",
   "private": true,
   "type": "module",
@@ -11,8 +11,8 @@
   },
   "dependencies": {
     "googlevideo": "^4.1.1",
-    "mediabunny": "1.61.3",
-    "youtubei.js": "18.1.0"
+    "mediabunny": "1.61.6",
+    "youtubei.js": "18.2.0"
   },
   "devDependencies": {
     "esbuild": "0.28.2"
